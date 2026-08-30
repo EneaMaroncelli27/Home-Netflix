@@ -29,6 +29,7 @@
   --dim:#9A8C78;       /* secondary text */
   --faint:#6B5F4F;     /* instrumentation / tertiary */
   --glow:rgba(232,163,61,.28);
+  --ember:#C4553D;     /* the one warning colour — destructive actions only */
 
   --serif:"Instrument Serif",Georgia,serif;
   --sans:"Hanken Grotesk",system-ui,sans-serif;
@@ -312,7 +313,7 @@ body{
 }
 
 /* send-to-phone — the little code sitting on a finished reel */
-.qrbtn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+.qrbtn,.delbtn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
   width:32px;height:32px;color:var(--dim);text-decoration:none;
   border:1px solid var(--line);border-radius:3px;transition:.16s var(--ease);}
 /* qr-icon.svg is a real code (it reads "ciao") used purely as a glyph. Painted
@@ -322,3 +323,17 @@ body{
   -webkit-mask:url(qr-icon.svg) center/contain no-repeat;
   mask:url(qr-icon.svg) center/contain no-repeat;}
 .qrbtn:hover{color:var(--bulb);border-color:var(--bulb);box-shadow:0 0 22px -8px var(--glow);}
+
+/* Remove from shelf — the QR button's twin, same square, same masked glyph.
+   Only the hover colour differs: ember, not the projector amber, because this
+   is the one control on the card that doesn't give you the film back. */
+.delbtn{background:none;padding:0;cursor:pointer;}
+.delbtn::before{content:"";width:18px;height:18px;background:currentColor;
+  -webkit-mask:url(trash-icon.svg) center/contain no-repeat;
+  mask:url(trash-icon.svg) center/contain no-repeat;}
+.delbtn:hover:not(:disabled){color:var(--ember);border-color:var(--ember);
+  box-shadow:0 0 22px -8px rgba(196,85,61,.5);}
+.delbtn:disabled{color:var(--faint);cursor:progress;}
+
+/* Both card icons live at the right-hand end of the foot. */
+.film .foot .tools{display:flex;align-items:center;gap:8px;flex-shrink:0;}

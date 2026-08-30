@@ -57,7 +57,7 @@ def update_progress(id, progress):
     with get_conn() as conn:
         conn.execute(query, (int(progress), id))
 
-def delete_film(id):
+def delete_film_db(id):
     query = "DELETE FROM films WHERE id = ?"
     with get_conn() as conn:
         conn.execute(query,(id,))
@@ -73,6 +73,14 @@ def list_films():
 
 def get_path(id : int):
     query = "SELECT path FROM films WHERE id = ?"
+    with get_conn() as conn:
+        path = conn.execute(query, (id,)).fetchone()
+    if path == None:
+        return None
+    return path[0]
+
+def get_cover(id : int):
+    query = "SELECT cover FROM films WHERE id = ?"
     with get_conn() as conn:
         path = conn.execute(query, (id,)).fetchone()
     if path == None:

@@ -163,6 +163,9 @@
     function buildCard(f, i) {
       const status = (f.status ?? "").toLowerCase();
       const playable = status === "completed" && f.path;
+      // The backend refuses anything mid-download (403), so only offer the
+      // button where the delete would actually go through.
+      const deletable = status === "completed";
       const pct = Math.max(0, Math.min(100, Math.round(f.progress ?? 0)));
       const label = status === "completed" ? "On shelf" : status === "downloading" ? `Downloading ${pct}%` : (f.status ?? "—");
       const card = document.createElement("article");
@@ -183,14 +186,43 @@
           <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
           <div class="foot">
             <span class="badge ${status}">${escapeHtml(label)}</span>
-            ${playable ? `<a class="qrbtn" href="qr-phone.html?id=${f.id}" title="Send to phone" aria-label="Send to phone"></a>` : ""}
+            <span class="tools">
+              ${playable ? `<a class="qrbtn" href="qr-phone.html?id=${f.id}" title="Send to phone" aria-label="Send to phone"></a>` : ""}
+              ${deletable ? `<button type="button" class="delbtn" title="Remove from shelf" aria-label="Remove from shelf"></button>` : ""}
+            </span>
           </div>
           ${status === "downloading"
             ? `<div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
             : ""}
         </div>`;
       if (playable) card.querySelector(".frame").onclick = () => openPlayer(f);
+      if (deletable) card.querySelector(".delbtn").onclick = () => removeFilm(f, card);
       return card;
+    }
+
+    // Throwing a film away is not undoable, so it costs one confirm. On success we
+    // reload rather than just dropping the node: the shelf counts come from the
+    // server and would otherwise be a reel out of date.
+    async function removeFilm(film, card) {
+      const name = film.title ?? "This film";
+      if (!confirm(`Delete \u201C${name}\u201D from the shelf? The file is removed for good.`)) return;
+      const btn = card.querySelector(".delbtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/delete?id=${encodeURIComponent(film.id)}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          statusEl.textContent = body.detail ?? `couldn't delete (${res.status})`;
+          btn.disabled = false;
+          return;
+        }
+        card.remove();
+        lastSig = "";          // force a rebuild on the refresh below
+        await loadFilms();
+      } catch (e) {
+        statusEl.textContent = "offline — delete didn't reach the server";
+        btn.disabled = false;
+      }
     }
 
     // Reconcile #results against data by id instead of wiping and rebuilding.

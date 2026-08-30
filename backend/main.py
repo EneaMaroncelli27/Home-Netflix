@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from backend.scripts.search import search_by_title
 from backend.scripts.download import download_film
 from backend.scripts.urlgetter import URL, COVER_URL
-from backend.db import list_films, delete_film, get_path
+from backend.db import list_films, delete_film_db, get_path, get_cover, get_status
 import asyncio
 import shutil
 import qrcode
@@ -75,6 +75,24 @@ def config():
 @app.get('/api/films')
 def get_film():
     return list_films()
+
+@app.get('/api/delete')
+def del_film(id):
+    status = get_status(id)
+    if status == None:
+        raise HTTPException(status_code=400,detail="No film with the provided id")
+    if status != "completed":
+        raise HTTPException(status_code=403,detail="It's only possible to delete film that have finished downloading")
+    film_name = get_path(id)
+    cover_name = get_cover(id)
+    if film_name:
+        (MOVIES_DIR / Path(film_name).name).unlink(missing_ok=True)
+    if cover_name:
+        (COVERS_DIR / Path(cover_name).name).unlink(missing_ok=True)
+
+    delete_film_db(id)
+    return {"status":"ok"}
+
 
 # utlis for browsing files in export
 def _within(child: Path, parent: Path) -> bool:
@@ -175,7 +193,7 @@ def export(id, new_path : str):
     if dest.exists():
         raise HTTPException(status_code=409, detail="A file by that name already exists in the destination")
     shutil.move(str(src),str(dest))
-    delete_film(id)
+    delete_film_db(id)
     return {"status":"ok"}
 
 # Bytes pushed per turn of the streaming loop below. Measured on this box:
@@ -254,8 +272,6 @@ async def phone_download(sess: str, request: Request):
     session = phone_sessions.get(sess)
     if session is None:
         raise HTTPException(status_code=404, detail="Unknown or expired code")
-    # One QR still means one film, but a transfer that broke may be picked back
-    # up: that is what a resume is. Only a finished or in-flight one is refused.
     if session["state"] == "done":
         raise HTTPException(status_code=410, detail="This code has already been used - generate a new one")
     if session["state"] == "active":

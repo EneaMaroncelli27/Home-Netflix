@@ -5,7 +5,7 @@ import requests
 from playwright.async_api import async_playwright
 from backend.scripts.film import Film
 from backend.scripts.urlgetter import URL, COVER_URL
-from backend.db import add_film, update_status, get_status, delete_film, update_progress
+from backend.db import add_film, update_status, get_status, delete_film_db, update_progress
 
 log = logging.getLogger("download")
 if not log.handlers:
@@ -112,7 +112,7 @@ async def download_film(movie : Film):
         await asyncio.to_thread(_blocking_download)
     except Exception as e:
         log.exception("download failed for %s (id=%s): %s", movie.title, movie.id, e)
-        delete_film(movie.id)
+        delete_film_db(movie.id)
         raise
     update_progress(movie.id, 100)
     update_status(movie.id, "completed")
