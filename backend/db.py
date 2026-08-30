@@ -75,5 +75,7 @@ def get_path(id : int):
     query = "SELECT path FROM films WHERE id = ?"
     with get_conn() as conn:
         path = conn.execute(query, (id,)).fetchone()
+    if path == None:
+        return None
     return path[0]
     

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0E0B09" />
+  <title>Home-Netflix — Send to phone</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* Kept local to this page for now — folds into app.css once the layout settles. */
+    .handoff{max-width:520px;margin:38px auto 0;text-align:center;}
+    .handoff .reel{font-family:var(--serif);font-size:1.9rem;line-height:1.1;color:var(--screen);margin:0 0 6px;}
+    .handoff .hint{font-family:var(--mono);font-size:.76rem;letter-spacing:.06em;color:var(--dim);margin:0 0 26px;}
+    .qrbox{display:inline-block;padding:16px;background:var(--screen);border-radius:8px;
+      box-shadow:0 0 70px -18px var(--glow);}
+    .qrbox img{display:block;width:240px;height:240px;image-rendering:pixelated;}
+    .handoff .stateline{font-family:var(--mono);font-size:.82rem;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--bulb);margin:26px 0 0;min-height:20px;}
+    .handoff .stateline.err{color:#E8896B;}
+    .handoff .track{height:6px;border-radius:3px;background:var(--ash);overflow:hidden;margin-top:14px;}
+    .handoff .track .fill{height:100%;width:0;background:var(--bulb);box-shadow:0 0 14px var(--glow);
+      transition:width .45s var(--ease);}
+    .handoff .bytes{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;color:var(--faint);margin:10px 0 0;}
+    /* Once the phone has taken the film the code is dead weight — shrink it away. */
+    .qrbox{transition:.45s var(--ease);}
+    .qrbox.spent{filter:grayscale(1);opacity:.18;transform:scale(.62);}
+    .handoff .acts{display:flex;gap:10px;justify-content:center;margin-top:28px;}
+  </style>
+</head>
+<body>
+  <div class="beam"></div>
+  <div class="grain"></div>
+
+  <main class="wrap">
+    <header class="masthead">
+      <div class="brand">
+        <p class="eyebrow">Private screening room</p>
+        <h1 class="wordmark">Home-<em>Netflix</em></h1>
+        <p class="tagline">Point a phone at the code · the reel walks out with it.</p>
+      </div>
+      <div class="masthead-side">
+        <a class="btn btn--ghost" href="offline.html">My shelf →</a>
+      </div>
+    </header>
+    <hr class="rule" />
+
+    <section class="handoff">
+      <p class="reel" id="reel">…</p>
+      <p class="hint" id="hint">Asking the projectionist for a code…</p>
+
+      <div class="qrbox" id="qrbox" hidden><img id="qr" alt="QR code linking to this film" /></div>
+
+      <p class="stateline" id="state"></p>
+      <div class="track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="track">
+        <div class="fill" id="fill"></div>
+      </div>
+      <p class="bytes" id="bytes">—</p>
+
+      <div class="acts">
+        <button class="btn btn--amber" id="again" disabled>New code</button>
+        <a class="btn btn--ghost" href="offline.html">Back to the shelf</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = location.origin.startsWith("http") ? location.origin : "http://localhost:8000";
+    const filmId = new URLSearchParams(location.search).get("id");
+
+    const reel = document.getElementById("reel");
+    const hint = document.getElementById("hint");
+    const qrbox = document.getElementById("qrbox");
+    const qrImg = document.getElementById("qr");
+    const stateEl = document.getElementById("state");
+    const track = document.getElementById("track");
+    const fill = document.getElementById("fill");
+    const bytesEl = document.getElementById("bytes");
+    const again = document.getElementById("again");
+
+    let token = null;
+    let pollTimer = null;
+
+    const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+
+    function fail(msg) {
+      clearTimeout(pollTimer);
+      again.disabled = false;
+      stateEl.textContent = msg;
+      stateEl.classList.add("err");
+    }
+
+    // The catalog is the only place holding the film's title, so the name over
+    // the code comes from there rather than from the QR endpoint.
+    async function loadTitle() {
+      try {
+        const films = await (await fetch(`${API}/api/films`)).json();
+        const film = films.find((f) => String(f.id) === String(filmId));
+        reel.textContent = film ? film.title : "This film";
+      } catch (e) {
+        reel.textContent = "This film";
+      }
+    }
+
+    async function mint() {
+      clearTimeout(pollTimer);
+      stateEl.classList.remove("err");
+      stateEl.textContent = "";
+      again.disabled = true;
+      qrbox.classList.remove("spent");
+      fill.style.width = "0%";
+      track.setAttribute("aria-valuenow", "0");
+      bytesEl.textContent = "—";
+      hint.textContent = "Asking the projectionist for a code…";
+
+      try {
+        const res = await fetch(`${API}/api/qr-download?id=${encodeURIComponent(filmId)}`, { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return fail(data.detail || "Couldn't mint a code");
+
+        token = data.token;
+        qrImg.src = data.data;
+        qrbox.hidden = false;
+        hint.textContent = "Scan it with the phone's camera.";
+        stateEl.textContent = "Waiting for a scan";
+        bytesEl.textContent = `0 MB of ${mb(data.size)}`;
+        again.disabled = false;
+        poll();
+      } catch (e) {
+        fail("The host didn't answer");
+      }
+    }
+
+    // The host cannot see the phone, only its own outgoing byte count, so it asks
+    // twice a second rather than being told.
+    async function poll() {
+      try {
+        const res = await fetch(`${API}/api/qr-progress/${token}`);
+        if (res.status === 404) return fail("That code expired — mint a new one");
+        const s = await res.json();
+
+        again.disabled = s.state === "active";
+        if (s.state === "active") stateEl.classList.remove("err");
+
+        if (s.state !== "waiting") {
+          qrbox.classList.add("spent");
+          fill.style.width = s.pct + "%";
+          track.setAttribute("aria-valuenow", String(s.pct));
+          bytesEl.textContent = `${mb(s.sent)} of ${mb(s.size)}`;
+        }
+
+        if (s.state === "done") {
+          stateEl.textContent = "Landed on the phone ✓";
+          again.disabled = false;
+          return;
+        }
+        // Not fatal any more: the phone can pick a broken transfer back up, so
+        // keep asking instead of closing the page down on the first stumble.
+        if (s.state === "aborted") {
+          stateEl.textContent = `Interrupted at ${s.pct}% — waiting for the phone to resume`;
+          stateEl.classList.add("err");
+          bytesEl.textContent = `${mb(s.sent)} of ${mb(s.size)} so far`;
+          pollTimer = setTimeout(poll, 500);
+          return;
+        }
+        stateEl.textContent = s.state === "active" ? `Sending — ${s.pct}%` : "Waiting for a scan";
+      } catch (e) {
+        /* transient blip: keep the last view and retry below */
+      }
+      pollTimer = setTimeout(poll, 500);
+    }
+
+    again.onclick = mint;
+
+    if (!filmId) {
+      reel.textContent = "No film picked";
+      hint.textContent = "Open this page from a reel on your shelf.";
+      fail("Nothing to send");
+      again.hidden = true;
+    } else {
+      loadTitle();
+      mint();
+    }
+  </script>
+</body>
+</html>

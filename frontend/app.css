@@ -310,3 +310,15 @@ body{
   .frame img,.film,.btn,.play{transition:none;}
   .chip.live .dot,.badge.downloading{animation:none;}
 }
+
+/* send-to-phone — the little code sitting on a finished reel */
+.qrbtn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+  width:32px;height:32px;color:var(--dim);text-decoration:none;
+  border:1px solid var(--line);border-radius:3px;transition:.16s var(--ease);}
+/* qr-icon.svg is a real code (it reads "ciao") used purely as a glyph. Painted
+   through a mask rather than dropped in an <img> so it takes the button's
+   colour on hover like any other icon would. */
+.qrbtn::before{content:"";width:18px;height:18px;background:currentColor;
+  -webkit-mask:url(qr-icon.svg) center/contain no-repeat;
+  mask:url(qr-icon.svg) center/contain no-repeat;}
+.qrbtn:hover{color:var(--bulb);border-color:var(--bulb);box-shadow:0 0 22px -8px var(--glow);}

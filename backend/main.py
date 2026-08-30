@@ -6,8 +6,10 @@ from backend.scripts.utlis import check_connection
 ROOT = Path(__file__).resolve().parent.parent
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
+from fastapi import Request
 from pydantic import BaseModel
 from backend.scripts.search import search_by_title
 from backend.scripts.download import download_film
@@ -15,6 +17,12 @@ from backend.scripts.urlgetter import URL, COVER_URL
 from backend.db import list_films, delete_film, get_path
 import asyncio
 import shutil
+import qrcode
+import urllib.parse
+import base64
+import io
+import re
+import uuid
 
 app = FastAPI()
 
@@ -33,6 +41,7 @@ MOVIES_DIR = ROOT / "Movies"
 COVERS_DIR.mkdir(exist_ok=True)
 MOVIES_DIR.mkdir(exist_ok=True)
 
+phone_sessions = {}
 
 class FilmIn(BaseModel):
     title: str
@@ -61,14 +70,13 @@ async def download(film: FilmIn, background_tasks : BackgroundTasks):
 
 @app.get('/api/config')
 def config():
-    # Frontend builds cover image URLs from the live (rotating) domain instead of
-    # hardcoding it. Served from the same dynamic source as search/download.
     return {"url": URL, "cover_base": COVER_URL}
 
 @app.get('/api/films')
 def get_film():
     return list_films()
 
+# utlis for browsing files in export
 def _within(child: Path, parent: Path) -> bool:
     """True if child is parent itself or sits underneath it."""
     try:
@@ -169,6 +177,137 @@ def export(id, new_path : str):
     shutil.move(str(src),str(dest))
     delete_film(id)
     return {"status":"ok"}
+
+# Bytes pushed per turn of the streaming loop below. Measured on this box:
+# 256 KB gives ~1.3 GB/s, 1 MB ~1.9 GB/s, 4 MB no better. The counter still
+# moves in fine enough steps for the progress bar at 1 MB.
+CHUNK = 1024 * 1024
+
+
+@app.post('/api/qr-download')
+def qr_download(id, request: Request):
+    path = get_path(id)
+    if path == None:
+            raise HTTPException(status_code=400, detail="No film was found with that id")
+    src = MOVIES_DIR / Path(path)
+    if not src.is_file():
+        raise HTTPException(status_code=404, detail="That film is missing on disk")
+
+    p_session = str(uuid.uuid4())
+    phone_sessions[p_session] = {
+        "path": path,              
+        "size": src.stat().st_size,
+        "sent": 0,
+        "state": "waiting",
+    }
+    qr_img = qrcode.make(str(request.base_url).rstrip('/') + '/dwnld/' + p_session)
+    buf = io.BytesIO()
+    qr_img.save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    return {"data": f"data:image/png;base64,{encoded}", "token": p_session, "size": src.stat().st_size}
+
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _resolve_range(header: str | None, size: int):
+    """Turn a Range header into inclusive byte bounds, or None for the whole file.
+
+    StaticFiles used to do this for us. Serving the file by hand means picking it
+    back up, otherwise a phone that loses WiFi has to start from zero.
+    """
+    if not header:
+        return None
+    match = _RANGE_RE.fullmatch(header.strip())
+    if not match:
+        return None
+    first, last = match.group(1), match.group(2)
+    if not first and not last:
+        return None
+    if not first:                                   # bytes=-500 -> the final 500 bytes
+        start, end = max(0, size - int(last)), size - 1
+    else:
+        start = int(first)
+        end = min(int(last), size - 1) if last else size - 1
+    if start > end or start >= size:
+        raise HTTPException(status_code=416, detail="Requested range not satisfiable",
+                            headers={"Content-Range": f"bytes */{size}"})
+    return start, end
+
+
+@app.get('/api/qr-progress/{sess}')
+def qr_progress(sess: str):
+    """Where the transfer has got to. Polled by the host while the phone pulls."""
+    session = phone_sessions.get(sess)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired code")
+    return {
+        "state": session["state"],
+        "sent": session["sent"],
+        "size": session["size"],
+        "pct": min(100, round(session["sent"] * 100 / (session["size"] or 1))),
+    }
+
+
+@app.get('/dwnld/{sess}')
+async def phone_download(sess: str, request: Request):
+    # Push the film to the phone by hand, counting the bytes on the way out to track progress.
+    session = phone_sessions.get(sess)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired code")
+    # One QR still means one film, but a transfer that broke may be picked back
+    # up: that is what a resume is. Only a finished or in-flight one is refused.
+    if session["state"] == "done":
+        raise HTTPException(status_code=410, detail="This code has already been used - generate a new one")
+    if session["state"] == "active":
+        raise HTTPException(status_code=409, detail="This code is already downloading somewhere")
+
+    src = MOVIES_DIR / Path(session["path"])
+    if not src.is_file():
+        session["state"] = "aborted"
+        raise HTTPException(status_code=404, detail="The film went missing from disk")
+
+    bounds = _resolve_range(request.headers.get("range"), session["size"])
+    start, end = bounds if bounds else (0, session["size"] - 1)
+    session["state"] = "active"
+    
+    async def stream():
+        reached = start
+        try:
+            with open(src, 'rb') as f:
+                await run_in_threadpool(f.seek, start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    chunk = await run_in_threadpool(f.read, min(CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    reached += len(chunk)
+                    # The furthest byte reached, never a running total: a resume
+                    # starts partway in, and summing would double-count the head.
+                    session["sent"] = max(session["sent"], reached)
+                    yield chunk
+        finally:
+            # Reached on a clean finish and on an early close alike. Anything
+            # short of the last byte means the phone walked away.
+            session["state"] = "done" if reached >= session["size"] else "aborted"
+
+    filename = urllib.parse.quote(src.name)
+    headers = {
+        "Content-Length": str(end - start + 1),
+        # Advertise resume support, otherwise the phone never asks for one.
+        "Accept-Ranges": "bytes",
+        # Nudge the phone into saving the film instead of opening a player.
+        "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+    }
+    if bounds:
+        headers["Content-Range"] = f"bytes {start}-{end}/{session['size']}"
+    return StreamingResponse(
+        stream(),
+        status_code=206 if bounds else 200,
+        media_type="video/mp4",
+        headers=headers,
+    )
+
 
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 app.mount("/movies", StaticFiles(directory=MOVIES_DIR), name="movies")

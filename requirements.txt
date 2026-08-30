@@ -7,3 +7,4 @@ playwright
 yt-dlp
 pycryptodomex
 telethon
+qrcode[pil]

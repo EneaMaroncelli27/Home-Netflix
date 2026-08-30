@@ -3,8 +3,6 @@ services:
     build: .
     ports:
       - "8000:8000"
-    # Telegram creds for get_new_url() — set these in a .env file next to this
-    # compose file (TG_API_ID, TG_API_HASH, TG_SESSION, TG_CHANNEL).
     env_file:
       - .env
     volumes:

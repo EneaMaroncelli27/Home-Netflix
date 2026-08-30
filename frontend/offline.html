@@ -183,6 +183,7 @@
           <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
           <div class="foot">
             <span class="badge ${status}">${escapeHtml(label)}</span>
+            ${playable ? `<a class="qrbtn" href="qr-phone.html?id=${f.id}" title="Send to phone" aria-label="Send to phone"></a>` : ""}
           </div>
           ${status === "downloading"
             ? `<div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
