@@ -1,0 +1,253 @@
+/* ============================================================
+   THE PROJECTION ROOM — webOS TV build
+   A separate stylesheet from app.css on purpose. The desktop
+   sheet targets evergreen Chrome; webOS TV browsers span
+   Chromium 38 (webOS 3.x) to 94 (webOS 23), so everything here
+   is restricted to what the OLDEST of them understands.
+
+   Deliberately avoided, with the Chromium version that would be
+   required to use it:
+     CSS custom properties / var()      49
+     display:grid                       57
+     gap: inside a FLEX container       84   (grid gap is 57)
+     aspect-ratio                       88
+     inset: shorthand                   87
+     clamp() / min() / max()            79
+     :focus-visible                     86
+     backdrop-filter                    76
+     conic-gradient()                   69
+   Every one of those silently drops on a TV: the declaration is
+   discarded and the box collapses or the spacing vanishes, which
+   is what produced the overlapping text.
+
+   Also TV-specific, not just old-browser-specific:
+     - 5% overscan margin; TV panels crop the physical edges.
+     - :focus is styled loudly. A TV is driven by a D-pad, so the
+       focus ring is the cursor. Without it there is no UI.
+     - :hover is never the only way to reach anything.
+     - 10-foot type scale: nothing below 20px.
+   ============================================================ */
+
+/* ---- Fonts: reuse the self-hosted files, no network needed ---- */
+@font-face{font-family:"Instrument Serif";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/instrumentserif-400.woff2") format("woff2");}
+@font-face{font-family:"Instrument Serif";font-style:italic;font-weight:400;font-display:swap;src:url("fonts/instrumentserif-400i.woff2") format("woff2");}
+@font-face{font-family:"Hanken Grotesk";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/hanken-400.woff2") format("woff2");}
+@font-face{font-family:"Hanken Grotesk";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/hanken-600.woff2") format("woff2");}
+@font-face{font-family:"Hanken Grotesk";font-style:normal;font-weight:700;font-display:swap;src:url("fonts/hanken-700.woff2") format("woff2");}
+@font-face{font-family:"Space Mono";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/spacemono-400.woff2") format("woff2");}
+@font-face{font-family:"Space Mono";font-style:normal;font-weight:700;font-display:swap;src:url("fonts/spacemono-700.woff2") format("woff2");}
+
+*{-webkit-box-sizing:border-box;box-sizing:border-box;}
+
+html,body{
+  margin:0;padding:0;width:100%;height:100%;
+  background:#0E0B09;
+  color:#F3EBDD;
+  font-family:"Hanken Grotesk",Helvetica,Arial,sans-serif;
+  font-size:20px;
+  line-height:1.45;
+  overflow:hidden;                 /* the app scrolls #scroll, never the page */
+  -webkit-text-size-adjust:100%;
+}
+
+/* The static warm wash. app.css animates a conic-gradient beam here; conic
+   needs Chromium 69 and an invalid value voids the whole background
+   shorthand, so this is a plain radial that every engine can paint. */
+#wash{
+  position:fixed;top:0;right:0;bottom:0;left:0;z-index:0;pointer-events:none;
+  background:radial-gradient(120% 80% at 88% -10%, rgba(232,163,61,.20), rgba(232,163,61,0) 55%);
+}
+
+/* ---- Frame: 5% overscan margin so nothing lands under the bezel ---- */
+#app{position:relative;z-index:2;height:100%;padding:0 5% 0 5%;}
+
+#scroll{
+  height:100%;
+  overflow-y:auto;
+  overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;
+  padding:48px 0 64px 0;
+}
+#scroll::-webkit-scrollbar{width:0;height:0;}   /* no pointer, no scrollbar */
+
+/* ---- Masthead ---- */
+.masthead{margin:0 0 26px 0;}
+.eyebrow{
+  font-family:"Space Mono",monospace;font-size:15px;font-weight:700;
+  letter-spacing:.32em;text-transform:uppercase;color:#E8A33D;margin:0 0 8px 0;
+}
+.wordmark{
+  font-family:"Instrument Serif",Georgia,serif;font-weight:400;
+  font-size:64px;line-height:1;letter-spacing:-.01em;margin:0;color:#F3EBDD;
+}
+.wordmark em{font-style:italic;color:#E8A33D;}
+
+/* Tabs. Inline-block + margin instead of flex+gap: flex gap needs Chromium 84
+   and would collapse these onto each other on every TV below webOS 22. */
+.tabs{margin:22px 0 0 0;font-size:0;}
+.tab{
+  display:inline-block;vertical-align:middle;margin:0 14px 0 0;
+  font-family:"Space Mono",monospace;font-size:18px;font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;
+  color:#9A8C78;background:transparent;
+  border:2px solid #3A2E20;border-radius:4px;padding:13px 24px;
+  cursor:pointer;outline:none;
+}
+.tab.on{color:#0E0B09;background:#E8A33D;border-color:#E8A33D;}
+.chip{
+  display:inline-block;vertical-align:middle;margin:0 0 0 6px;
+  font-family:"Space Mono",monospace;font-size:16px;letter-spacing:.10em;
+  text-transform:uppercase;color:#9A8C78;
+  border:1px solid #3A2E20;border-radius:3px;padding:11px 14px;white-space:nowrap;
+}
+.chip b{color:#E8A33D;font-weight:400;}
+
+.rule{height:2px;border:0;margin:26px 0 0 0;
+  background:linear-gradient(90deg,#E8A33D,#3A2E20 22%,rgba(58,46,32,0));}
+
+/* ---- Search bar. Table layout, not flex: guaranteed on Chromium 38 and
+       it gives the input a real remaining-width without flex:1. ---- */
+.bar{display:table;width:100%;margin:32px 0 10px 0;border-spacing:0;}
+.bar .cell{display:table-cell;vertical-align:middle;}
+.bar .cell.grow{width:100%;padding-right:16px;}
+#q{
+  display:block;width:100%;
+  background:#16110B;color:#F3EBDD;
+  border:2px solid #3A2E20;border-radius:4px;
+  padding:20px 22px;
+  font-family:"Instrument Serif",Georgia,serif;font-size:30px;
+  outline:none;
+}
+#q::-webkit-input-placeholder{color:#6B5F4F;font-style:italic;}
+
+/* ---- Buttons ---- */
+.btn{
+  display:inline-block;vertical-align:middle;
+  font-family:"Hanken Grotesk",Helvetica,Arial,sans-serif;
+  font-weight:600;font-size:20px;line-height:1;
+  border:2px solid transparent;border-radius:4px;padding:19px 28px;
+  cursor:pointer;text-decoration:none;white-space:nowrap;outline:none;
+}
+.btn--amber{background:#E8A33D;color:#1a1206;}
+.btn--ghost{background:transparent;color:#F3EBDD;border-color:#3A2E20;}
+.btn[disabled]{opacity:.45;}
+
+.statusline{
+  font-family:"Space Mono",monospace;font-size:18px;color:#9A8C78;
+  letter-spacing:.06em;min-height:26px;margin:22px 0 10px 0;
+}
+.statusline b{color:#E8A33D;font-weight:400;}
+
+/* ---- The shelf.
+       Fixed-width inline-block cards, not grid: display:grid needs Chromium 57
+       and webOS 3.x/4.x would stack every card full-width instead. font-size:0
+       on the container kills the whitespace gaps between inline-blocks. ---- */
+.shelf{font-size:0;margin:8px 0 0 0;}
+.film{
+  display:inline-block;vertical-align:top;
+  width:31.5%;margin:0 2.75% 34px 0;
+  background:#1E1610;border:2px solid #3A2E20;border-radius:6px;
+  overflow:hidden;outline:none;cursor:pointer;
+}
+.film.endrow{margin-right:0;}         /* every 3rd card, set from JS */
+
+/* 16:9 via the padding-top ratio box. aspect-ratio needs Chromium 88; without
+   this the frame computes to zero height and the title text below rides up
+   over the artwork -- that was the overlap. */
+.frame{position:relative;width:100%;height:0;padding-top:56.25%;background:#000;overflow:hidden;}
+.frame img{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  object-fit:cover;display:block;border:0;
+}
+.frame .noart{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  background:repeating-linear-gradient(45deg,#0c0a08,#0c0a08 9px,#100c09 9px,#100c09 18px);
+}
+/* Centred without flex (no reliable centring on Chromium 38) and without
+   line-height, which would need to know the box height in advance. */
+.frame .noart i{
+  position:absolute;top:50%;left:0;width:100%;
+  -webkit-transform:translateY(-50%);transform:translateY(-50%);
+  font-family:"Space Mono",monospace;font-size:16px;font-style:normal;
+  letter-spacing:.12em;color:#6B5F4F;text-align:center;
+}
+.frame .play{
+  position:absolute;top:50%;left:50%;
+  width:74px;height:74px;margin:-37px 0 0 -37px;
+  border-radius:50%;background:#E8A33D;color:#1a1206;
+  font-size:30px;line-height:74px;text-align:center;
+}
+
+.info{padding:18px 18px 20px 18px;}
+.name{
+  font-family:"Instrument Serif",Georgia,serif;font-size:26px;line-height:1.15;
+  color:#F3EBDD;
+  /* Two-line clamp with a hard height so a long title can never grow the card
+     and push into the row beneath it. */
+  height:60px;overflow:hidden;
+}
+.foot{margin:16px 0 0 0;font-size:0;}
+.badge{
+  display:inline-block;font-family:"Space Mono",monospace;font-size:15px;
+  font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  padding:8px 12px;border-radius:3px;border:1px solid #3A2E20;color:#9A8C78;
+}
+.badge.completed{color:#E8A33D;border-color:rgba(232,163,61,.45);}
+.badge.downloading{color:#FFD8A8;border-color:rgba(255,216,168,.30);}
+.pullbtn{width:100%;text-align:center;}
+
+.track{height:6px;border-radius:3px;background:#2A2117;overflow:hidden;margin:16px 0 0 0;}
+.track .fill{height:100%;width:0;background:#E8A33D;}
+
+.empty-state{
+  border:2px dashed #3A2E20;border-radius:8px;padding:64px 32px;text-align:center;
+  background:#16110B;font-size:20px;
+}
+.empty-state .big{font-family:"Instrument Serif",Georgia,serif;font-size:34px;color:#F3EBDD;margin:0 0 10px 0;}
+.empty-state p{font-family:"Space Mono",monospace;font-size:18px;color:#9A8C78;margin:0;}
+
+/* ---- THE FOCUS RING ----
+   On a TV this is the cursor. app.css uses :focus-visible (Chromium 86), which
+   no webOS below 22 implements -- so the TV had no visible selection at all.
+   Plain :focus, plus an explicit .focused class the nav code sets, because
+   some webOS builds drop :focus styling on non-form elements. */
+.tab:focus,.btn:focus,#q:focus,.film:focus,
+.tab.focused,.btn.focused,#q.focused,.film.focused{
+  border-color:#E8A33D;
+  -webkit-box-shadow:0 0 0 4px rgba(232,163,61,.55);
+          box-shadow:0 0 0 4px rgba(232,163,61,.55);
+}
+.film:focus,.film.focused{background:#241a12;}
+.film:focus .name,.film.focused .name{color:#FFD8A8;}
+#q:focus,#q.focused{background:#1E1610;}
+
+/* ---- Player ----
+   top/right/bottom/left written out; the inset shorthand needs Chromium 87 and
+   the overlay would otherwise sit at its static position instead of covering. */
+#player-layer{
+  display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;
+  background:#000;
+}
+#player-layer.open{display:block;}
+#player-title{
+  position:absolute;top:0;left:0;width:100%;z-index:2;
+  padding:28px 5%;
+  font-family:"Instrument Serif",Georgia,serif;font-size:32px;color:#F3EBDD;
+  background:linear-gradient(180deg,rgba(0,0,0,.85),rgba(0,0,0,0));
+}
+#player-hint{
+  position:absolute;bottom:0;left:0;width:100%;z-index:2;
+  padding:22px 5%;text-align:center;
+  font-family:"Space Mono",monospace;font-size:17px;letter-spacing:.10em;
+  color:#9A8C78;background:linear-gradient(0deg,rgba(0,0,0,.85),rgba(0,0,0,0));
+}
+#video{position:absolute;top:0;left:0;width:100%;height:100%;background:#000;outline:none;}
+
+/* ---- Booth log: opt-in, off-screen unless toggled ---- */
+#booth{
+  display:none;margin:40px 0 0 0;
+  font-family:"Space Mono",monospace;font-size:15px;color:#9A8C78;
+  background:#0a0807;border:1px solid #3A2E20;border-radius:5px;
+  padding:16px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+}
+#booth.open{display:block;}

@@ -158,41 +158,71 @@
       }
     }
 
+    // Build one film card. Split out of render() so the diff below can reuse it:
+    // a card is only ever built for a brand-new film or one whose status changed.
+    function buildCard(f, i) {
+      const status = (f.status ?? "").toLowerCase();
+      const playable = status === "completed" && f.path;
+      const pct = Math.max(0, Math.min(100, Math.round(f.progress ?? 0)));
+      const label = status === "completed" ? "On shelf" : status === "downloading" ? `Downloading ${pct}%` : (f.status ?? "—");
+      const card = document.createElement("article");
+      card.className = "film" + (playable ? " playable" : "");
+      card.dataset.id = f.id;
+      card.dataset.status = status;        // diff key: re-render only when this changes
+      card.style.setProperty("--i", i);
+      const cover = f.cover ? `/covers/${encodeURIComponent(f.cover)}` : "";
+      card.innerHTML = `
+        <div class="frame${cover ? "" : " empty"}">
+          ${cover
+            ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover" loading="lazy" decoding="async"
+                 onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
+            : `no artwork`}
+          ${playable ? `<div class="play"><span>▶</span></div>` : ""}
+        </div>
+        <div class="info">
+          <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
+          <div class="foot">
+            <span class="badge ${status}">${escapeHtml(label)}</span>
+          </div>
+          ${status === "downloading"
+            ? `<div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
+            : ""}
+        </div>`;
+      if (playable) card.querySelector(".frame").onclick = () => openPlayer(f);
+      return card;
+    }
+
+    // Reconcile #results against data by id instead of wiping and rebuilding.
+    // Unchanged cards are left untouched (no lost focus, no replayed rise animation);
+    // only removed films drop out, only new films are appended, and only a film whose
+    // status actually changed gets its card replaced.
     function render(films) {
-      results.innerHTML = "";
       if (!films.length) {
+        results.innerHTML = "";
         emptyState("Your shelf is empty.", "Find a film and pull it down — it'll wait here for you.");
         return;
       }
+      // Leaving from the empty state: drop its placeholder before diffing real cards.
+      if (results.querySelector(".empty-state")) results.innerHTML = "";
+
+      const desiredIds = new Set(films.map((f) => String(f.id)));
+      results.querySelectorAll(".film[data-id]").forEach((node) => {
+        if (!desiredIds.has(node.dataset.id)) node.remove();
+      });
+
       films.forEach((f, i) => {
         const status = (f.status ?? "").toLowerCase();
-        const playable = status === "completed" && f.path;
-        const pct = Math.max(0, Math.min(100, Math.round(f.progress ?? 0)));
-        const label = status === "completed" ? "On shelf" : status === "downloading" ? `Downloading ${pct}%` : (f.status ?? "—");
-        const card = document.createElement("article");
-        card.className = "film" + (playable ? " playable" : "");
-        card.dataset.id = f.id;
-        card.style.setProperty("--i", i);
-        const cover = f.cover ? `/covers/${encodeURIComponent(f.cover)}` : "";
-        card.innerHTML = `
-          <div class="frame${cover ? "" : " empty"}">
-            ${cover
-              ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover"
-                   onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
-              : `no artwork`}
-            ${playable ? `<div class="play"><span>▶</span></div>` : ""}
-          </div>
-          <div class="info">
-            <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
-            <div class="foot">
-              <span class="badge ${status}">${escapeHtml(label)}</span>
-            </div>
-            ${status === "downloading"
-              ? `<div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
-              : ""}
-          </div>`;
-        if (playable) card.querySelector(".frame").onclick = () => openPlayer(f);
-        results.appendChild(card);
+        const existing = results.querySelector(`.film[data-id="${f.id}"]`);
+        let node;
+        if (existing && existing.dataset.status === status) {
+          node = existing;                 // unchanged → leave the DOM node exactly as-is
+        } else {
+          node = buildCard(f, i);          // new film, or status changed → (re)build
+          if (existing) existing.replaceWith(node);
+        }
+        // Keep source order without disturbing cards already in the right place.
+        const atPos = results.children[i];
+        if (atPos !== node) results.insertBefore(node, atPos || null);
       });
     }
 

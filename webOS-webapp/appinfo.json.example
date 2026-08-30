@@ -1,0 +1,11 @@
+{
+    "id": "com.webapp.name",
+    "version":"1.0.0",
+    "vendor":"Custom",
+    "type":"web",
+    "main": "index.html",
+    "title": "Name",
+    "icon": "icon.png",
+    "largeIcon": "largeIcon.png"
+
+}

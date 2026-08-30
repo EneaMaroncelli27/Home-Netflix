@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>HomeNetflix</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #eee;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #screen {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 6vh 8vw;
+  }
+  h1 { font-size: 3.4vw; margin: 0 0 1vh 0; letter-spacing: 0.02em; }
+  h1 .accent { color: #e50914; }
+  p  { font-size: 1.6vw; line-height: 1.5; color: #bbb; margin: 0 0 3vh 0; }
+  #status { font-size: 1.5vw; color: #888; min-height: 2.2vw; }
+  #recovery { display: none; }
+  label { display: block; font-size: 1.4vw; color: #999; margin-bottom: 1vh; }
+  input, button {
+    font-family: inherit; font-size: 1.8vw;
+    background: #1a1a1a; color: #eee;
+    border: 2px solid #333; border-radius: 6px;
+    padding: 1.2vh 1.6vw; outline: none;
+  }
+  input { width: 26vw; }
+  button { cursor: pointer; margin-left: 1vw; }
+  input:focus, button:focus {
+    border-color: #e50914;
+    box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.35);
+  }
+  #recent { margin-top: 3vh; }
+  #recent button { margin: 0 1vw 1vh 0; font-size: 1.5vw; }
+  .hint { font-size: 1.2vw; color: #666; margin-top: 4vh; }
+</style>
+</head>
+<body>
+<div id="screen">
+  <h1>Home<span class="accent">Netflix</span></h1>
+  <p id="status">Ricerca del server in corso...</p>
+
+  <div id="recovery">
+    <label for="host">Indirizzo del server (IP o nome host)</label>
+    <div>
+      <input id="host" type="text" value="192.168.1.74" autocomplete="off">
+      <button id="connect">Connetti</button>
+    </div>
+    <div id="recent"></div>
+    <p class="hint">
+      Usa le frecce del telecomando per spostarti e OK per selezionare.
+      La porta predefinita e' 8000; puoi anche scrivere host:porta.
+    </p>
+  </div>
+</div>
+
+<script>
+/* HomeNetflix webOS shim.
+ *
+ * The television only ships this file; the real web app is served from a
+ * machine on the LAN. That machine gets its address over DHCP, so the target
+ * cannot be baked in at build time -- it has to be resolved at launch.
+ *
+ * Resolution order: last known good host, then the build-time defaults, then a
+ * sweep of the likely home subnets. If nothing answers, we show a recovery
+ * screen the user can drive with the remote instead of a black page.
+ *
+ * Written in ES5 with XMLHttpRequest on purpose: webOS browser engines range
+ * from Chromium 38 to 68 depending on the model year, so fetch, Promise,
+ * AbortController, arrow functions and template literals are all off limits.
+ */
+(function () {
+  'use strict';
+
+  var DEFAULT_PORT = 8000;
+  var PROBE_PATH = '/api/config';   // cheap, and only our backend answers it
+  var APP_PATH = '/webos.html';     // the TV build; '/' is the desktop build
+  var STORAGE_KEY = 'homenetflix.host';
+  var FAST_TIMEOUT = 2500;          // known candidates get a generous window
+  var SWEEP_TIMEOUT = 900;          // a subnet sweep must stay snappy
+  var SWEEP_BATCH = 24;             // older engines choke on 254 open sockets
+
+  // Hosts tried before falling back to a sweep, in order.
+  var SEED_HOSTS = [
+    '192.168.1.74:8000'
+  ];
+
+  // Subnets swept as a last resort, in order.
+  var SWEEP_SUBNETS = ['192.168.1.', '192.168.0.'];
+
+  var statusEl = document.getElementById('status');
+  var recoveryEl = document.getElementById('recovery');
+  var hostInput = document.getElementById('host');
+  var connectBtn = document.getElementById('connect');
+  var recentEl = document.getElementById('recent');
+
+  function say(text) {
+    statusEl.innerHTML = '';
+    statusEl.appendChild(document.createTextNode(text));
+  }
+
+  function normalize(raw) {
+    var host = String(raw || '').replace(/^\s+|\s+$/g, '');
+    if (!host) { return ''; }
+    host = host.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    if (host.indexOf(':') === -1) { host = host + ':' + DEFAULT_PORT; }
+    return host;
+  }
+
+  function readStored() {
+    try { return window.localStorage.getItem(STORAGE_KEY) || ''; }
+    catch (e) { return ''; }   // storage is disabled on some webOS profiles
+  }
+
+  function writeStored(host) {
+    try { window.localStorage.setItem(STORAGE_KEY, host); }
+    catch (e) { /* non-fatal: we just lose the shortcut next launch */ }
+  }
+
+  /* Resolves to done(true) only when the host answers the probe path. A plain
+   * network failure, a timeout and a non-2xx status are all treated the same:
+   * that host is not our server. */
+  function probe(host, timeout, done) {
+    var settled = false;
+    var xhr = new XMLHttpRequest();
+
+    function settle(ok) {
+      if (settled) { return; }
+      settled = true;
+      try { if (!ok) { xhr.abort(); } } catch (e) {}
+      done(ok);
+    }
+
+    try {
+      xhr.open('GET', 'http://' + host + PROBE_PATH, true);
+    } catch (e) {
+      return settle(false);
+    }
+
+    xhr.timeout = timeout;
+    xhr.onload = function () { settle(xhr.status >= 200 && xhr.status < 300); };
+    xhr.onerror = function () { settle(false); };
+    xhr.ontimeout = function () { settle(false); };
+
+    try { xhr.send(); } catch (e) { settle(false); }
+  }
+
+  function go(host) {
+    writeStored(host);
+    say('Connesso a ' + host + '. Avvio...');
+    // replace() keeps the app out of history so the remote's back button
+    // leaves the app instead of bouncing back to this shim.
+    //
+    // APP_PATH, not '/': the server's root serves the desktop build, which is
+    // written for evergreen Chrome and is a syntax error on every webOS engine
+    // below Chromium 80 -- it paints and then ignores every button. webos.html
+    // is the ES5, D-pad-driven build of the same app.
+    window.location.replace('http://' + host + APP_PATH);
+  }
+
+  /* Tries each candidate in order, one at a time. */
+  function trySequential(hosts, timeout, onFail) {
+    var i = 0;
+    function next() {
+      if (i >= hosts.length) { return onFail(); }
+      var host = hosts[i++];
+      say('Contatto ' + host + '...');
+      probe(host, timeout, function (ok) {
+        if (ok) { go(host); } else { next(); }
+      });
+    }
+    next();
+  }
+
+  /* Sweeps the subnets in fixed-size batches, racing the hosts within a batch
+   * but keeping the batches themselves sequential. */
+  function trySweep(onFail) {
+    var candidates = [];
+    var s, n;
+    for (s = 0; s < SWEEP_SUBNETS.length; s++) {
+      for (n = 1; n <= 254; n++) {
+        candidates.push(SWEEP_SUBNETS[s] + n + ':' + DEFAULT_PORT);
+      }
+    }
+
+    var index = 0;
+    var found = false;
+
+    function runBatch() {
+      if (found) { return; }
+      if (index >= candidates.length) { return onFail(); }
+
+      var batch = candidates.slice(index, index + SWEEP_BATCH);
+      index += SWEEP_BATCH;
+      var pending = batch.length;
+      var percent = Math.round((index / candidates.length) * 100);
+      say('Scansione della rete locale... ' + Math.min(percent, 100) + '%');
+
+      for (var i = 0; i < batch.length; i++) {
+        (function (host) {
+          probe(host, SWEEP_TIMEOUT, function (ok) {
+            if (found) { return; }
+            if (ok) { found = true; return go(host); }
+            pending--;
+            if (pending === 0) { runBatch(); }
+          });
+        })(batch[i]);
+      }
+    }
+
+    runBatch();
+  }
+
+  function showRecovery() {
+    say("Server non trovato. Inserisci l'indirizzo manualmente.");
+    recoveryEl.style.display = 'block';
+
+    var stored = readStored();
+    if (stored) { hostInput.value = stored; }
+
+    // One-tap buttons for the hosts we already know about.
+    var known = [];
+    if (stored) { known.push(stored); }
+    for (var i = 0; i < SEED_HOSTS.length; i++) {
+      if (known.indexOf(SEED_HOSTS[i]) === -1) { known.push(SEED_HOSTS[i]); }
+    }
+    for (var j = 0; j < known.length; j++) {
+      (function (host) {
+        var b = document.createElement('button');
+        b.appendChild(document.createTextNode('Riprova ' + host));
+        b.onclick = function () { attempt(host); };
+        recentEl.appendChild(b);
+      })(known[j]);
+    }
+
+    hostInput.focus();
+  }
+
+  function attempt(raw) {
+    var host = normalize(raw);
+    if (!host) { return say('Inserisci un indirizzo valido.'); }
+    say('Contatto ' + host + '...');
+    probe(host, FAST_TIMEOUT, function (ok) {
+      if (ok) { return go(host); }
+      say('Nessuna risposta da ' + host + '. Controlla che il server sia acceso.');
+    });
+  }
+
+  connectBtn.onclick = function () { attempt(hostInput.value); };
+  hostInput.onkeydown = function (e) {
+    if (e.keyCode === 13) { attempt(hostInput.value); }   // Enter / remote OK
+  };
+
+  // Resolution order: last known good host first, then the build-time seeds.
+  var ordered = [];
+  var stored = readStored();
+  if (stored) { ordered.push(stored); }
+  for (var k = 0; k < SEED_HOSTS.length; k++) {
+    if (ordered.indexOf(SEED_HOSTS[k]) === -1) { ordered.push(SEED_HOSTS[k]); }
+  }
+
+  trySequential(ordered, FAST_TIMEOUT, function () {
+    trySweep(showRecovery);
+  });
+})();
+</script>
+</body>
+</html>

@@ -85,7 +85,7 @@
         card.innerHTML = `
           <div class="frame">
             ${cover
-              ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover"
+              ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover" loading="lazy" decoding="async"
                    onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
               : `<span>no artwork</span>`}
           </div>

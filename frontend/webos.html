@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Fixed logical width, not device-width. webOS reports a device-width that
+       varies by model year and panel mode, which is what made the desktop
+       layout land at a different scale on every set. 1280 is the standard
+       webOS app canvas and the TV upscales it to the panel. -->
+  <meta name="viewport" content="width=1280, initial-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0E0B09" />
+  <title>Home-Netflix — TV</title>
+  <link rel="stylesheet" href="webos.css" />
+</head>
+<body>
+  <div id="wash"></div>
+
+  <div id="app">
+    <div id="scroll">
+
+      <div class="masthead">
+        <p class="eyebrow">Private screening room</p>
+        <h1 class="wordmark">Home-<em>Netflix</em></h1>
+        <div class="tabs">
+          <button class="tab on" id="tabFind"  data-nav="1" type="button">Find a film</button>
+          <button class="tab"    id="tabShelf" data-nav="1" type="button">My shelf</button>
+          <span class="chip" id="chip">—</span>
+        </div>
+      </div>
+      <hr class="rule" />
+
+      <!-- ============ VIEW: FIND ============ -->
+      <div id="view-find">
+        <div class="bar">
+          <div class="cell grow">
+            <input id="q" data-nav="1" type="text" autocomplete="off"
+                   placeholder="a title… e.g. Interstellar" aria-label="Search a film title" />
+          </div>
+          <div class="cell">
+            <button class="btn btn--amber" id="searchBtn" data-nav="1" type="button">Find</button>
+          </div>
+        </div>
+        <p class="statusline" id="findStatus">Type a title and press OK on Find.</p>
+        <div class="shelf" id="findResults"></div>
+      </div>
+
+      <!-- ============ VIEW: SHELF ============ -->
+      <div id="view-shelf" style="display:none">
+        <p class="statusline" id="shelfStatus">Loading your shelf…</p>
+        <div class="shelf" id="shelfResults"></div>
+      </div>
+
+      <pre id="booth">—</pre>
+    </div>
+  </div>
+
+  <!-- ============ PLAYER ============ -->
+  <div id="player-layer">
+    <div id="player-title"></div>
+    <video id="video" preload="metadata"></video>
+    <div id="player-hint">OK play/pause · ◀ ▶ skip 10s · BACK close</div>
+  </div>
+
+<script>
+/* ===========================================================================
+   Home-Netflix — webOS TV client.
+
+   Why this file exists instead of a couple of patches to index.html:
+
+   The desktop pages are written for evergreen Chrome. webOS TV browsers run
+   Chromium 38 (webOS 3.x) through 94 (webOS 23), and the desktop pages use
+   language features that are a hard SYNTAX ERROR below Chromium 80 --
+   `f.title ?? ""` above all. A syntax error in an inline <script> discards the
+   ENTIRE block at parse time, before a single statement executes, so the
+   listeners at the bottom of index.html were never attached. The page painted
+   fine and then did absolutely nothing: that is the "no button presses"
+   report, and no amount of pressing was ever going to fix it.
+
+   So everything below is ES5, verified against Chromium 38:
+     - var only; no const/let, no arrow functions, no template literals.
+     - XMLHttpRequest, not fetch (Chromium 42) and not async/await (55).
+     - no ??, no ?., no spread, no default parameters.
+     - e.keyCode, not e.key (KeyboardEvent.key is Chromium 51 -- which is the
+       second reason Enter never started a search on older sets).
+     - no Set / Map / Promise, no NodeList.forEach (Chromium 51).
+
+   And everything is built for a D-pad rather than a mouse. A TV has no
+   pointer: focus IS the cursor, so this file carries its own spatial
+   navigation and draws a loud focus ring. The desktop sheet expresses all of
+   its affordances through :hover and :focus-visible, neither of which exists
+   on a remote-driven set.
+   =========================================================================== */
+(function () {
+  'use strict';
+
+  /* ---------------------------------------------------------------- config */
+
+  var API = window.location.origin;
+  if (!API || API.indexOf('http') !== 0) { API = 'http://localhost:8000'; }
+
+  var IMG_BASE = '';          // cover host for SEARCH hits; filled from /api/config
+  var POLL_MS  = 2000;        // shelf refresh while something is downloading
+  var SEEK_S   = 10;
+
+  /* webOS remote key codes. The colour buttons and transport keys are only
+     delivered on real hardware, so the desktop equivalents are kept alongside
+     for testing this page in a normal browser. */
+  var K_LEFT = 37, K_UP = 38, K_RIGHT = 39, K_DOWN = 40;
+  var K_OK = 13, K_BACK = 461, K_BACKSPACE = 8, K_ESC = 27;
+  var K_PLAY = 415, K_PAUSE = 19, K_STOP = 413;
+  var K_RED = 403, K_ZERO = 48;
+
+  /* ------------------------------------------------------------- shortcuts */
+
+  function $(id) { return document.getElementById(id); }
+
+  var scroll      = $('scroll');
+  var tabFind     = $('tabFind');
+  var tabShelf    = $('tabShelf');
+  var chip        = $('chip');
+  var viewFind    = $('view-find');
+  var viewShelf   = $('view-shelf');
+  var q           = $('q');
+  var searchBtn   = $('searchBtn');
+  var findStatus  = $('findStatus');
+  var findResults = $('findResults');
+  var shelfStatus = $('shelfStatus');
+  var shelfResults= $('shelfResults');
+  var booth       = $('booth');
+  var playerLayer = $('player-layer');
+  var playerTitle = $('player-title');
+  var video       = $('video');
+
+  var view = 'find';          // 'find' | 'shelf'
+  var playerOpen = false;
+  var pollTimer = null;
+  var lastFocusBeforePlayer = null;
+
+  /* --------------------------------------------------------------- helpers */
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /* Stands in for `a ?? b`, which does not parse below Chromium 80. */
+  function val(v, fallback) {
+    return (v === null || v === undefined) ? fallback : v;
+  }
+
+  function log(text) {
+    booth.textContent = String(text).slice(0, 4000);
+  }
+
+  /* One XHR helper for every call. done(ok, parsedBody, httpStatus). */
+  function request(method, url, body, timeout, done) {
+    var xhr = new XMLHttpRequest();
+    var settled = false;
+
+    function settle(ok, data, status) {
+      if (settled) { return; }
+      settled = true;
+      done(ok, data, status);
+    }
+
+    try {
+      xhr.open(method, url, true);
+    } catch (e) {
+      return settle(false, null, 0);
+    }
+
+    xhr.timeout = timeout;
+    if (body !== null) { xhr.setRequestHeader('Content-Type', 'application/json'); }
+
+    xhr.onload = function () {
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* non-JSON body */ }
+      settle(xhr.status >= 200 && xhr.status < 300, data, xhr.status);
+    };
+    xhr.onerror   = function () { settle(false, null, 0); };
+    xhr.ontimeout = function () { settle(false, null, 0); };
+
+    try { xhr.send(body === null ? null : JSON.stringify(body)); }
+    catch (e) { settle(false, null, 0); }
+  }
+
+  /* ============================ SPATIAL NAVIGATION =========================
+     Focus is the cursor. Candidates are every visible [data-nav] element in
+     the active view; a move picks the nearest one that actually lies in the
+     pressed direction, biased so a small sideways drift beats a large one.
+     ====================================================================== */
+
+  function isVisible(el) {
+    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  }
+
+  function candidates() {
+    var nodes = document.querySelectorAll('[data-nav]');
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (isVisible(nodes[i])) { out.push(nodes[i]); }
+    }
+    return out;
+  }
+
+  function centre(el) {
+    var r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r };
+  }
+
+  function current() {
+    var el = document.activeElement;
+    if (el && el.getAttribute && el.getAttribute('data-nav') && isVisible(el)) { return el; }
+    var c = candidates();
+    return c.length ? c[0] : null;
+  }
+
+  function setFocus(el) {
+    if (!el) { return; }
+    var all = document.querySelectorAll('.focused');
+    for (var i = 0; i < all.length; i++) { all[i].className = all[i].className.replace(/\s*\bfocused\b/, ''); }
+    el.className = el.className + ' focused';
+    try { el.focus(); } catch (e) {}
+    ensureVisible(el);
+  }
+
+  /* scrollIntoView is unreliable across these engines (and the boolean form
+     jumps the element to the very top), so the container is scrolled by hand. */
+  function ensureVisible(el) {
+    var pad = 60;
+    var er = el.getBoundingClientRect();
+    var sr = scroll.getBoundingClientRect();
+    if (er.top < sr.top + pad) {
+      scroll.scrollTop -= (sr.top + pad - er.top);
+    } else if (er.bottom > sr.bottom - pad) {
+      scroll.scrollTop += (er.bottom - (sr.bottom - pad));
+    }
+  }
+
+  function move(dir) {
+    var from = current();
+    if (!from) { return; }
+    var a = centre(from);
+    var list = candidates();
+    var best = null, bestScore = Infinity;
+
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el === from) { continue; }
+      var b = centre(el);
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var along, across;
+
+      if (dir === 'left')       { along = -dx; across = Math.abs(dy); }
+      else if (dir === 'right') { along =  dx; across = Math.abs(dy); }
+      else if (dir === 'up')    { along = -dy; across = Math.abs(dx); }
+      else                      { along =  dy; across = Math.abs(dx); }
+
+      if (along <= 1) { continue; }                 // not in the pressed direction
+      // Sideways drift is penalised so a move stays in its row/column when it can.
+      var score = along + across * 2.2;
+      if (score < bestScore) { bestScore = score; best = el; }
+    }
+
+    if (best) { setFocus(best); }
+  }
+
+  function activate() {
+    var el = current();
+    if (!el) { return; }
+    if (el === q) { doSearch(); return; }           // OK on the field = search
+    if (typeof el.__activate === 'function') { el.__activate(); return; }
+    if (el.click) { el.click(); }
+  }
+
+  /* ================================ VIEWS ================================ */
+
+  function showView(name) {
+    view = name;
+    var find = (name === 'find');
+    viewFind.style.display  = find ? 'block' : 'none';
+    viewShelf.style.display = find ? 'none'  : 'block';
+    tabFind.className  = find ? 'tab on' : 'tab';
+    tabShelf.className = find ? 'tab'    : 'tab on';
+    scroll.scrollTop = 0;
+
+    if (find) {
+      stopPolling();
+      setFocus(q);
+    } else {
+      setFocus(tabShelf);
+      loadShelf();
+    }
+  }
+
+  /* ================================ SEARCH =============================== */
+
+  function doSearch() {
+    var title = q.value.replace(/^\s+|\s+$/g, '');
+    if (!title) {
+      findStatus.innerHTML = 'Type a title first.';
+      setFocus(q);
+      return;
+    }
+    findStatus.innerHTML = 'Searching the catalog for <b>' + esc(title) + '</b>…';
+    findResults.innerHTML = '';
+
+    request('POST', API + '/api/search?title=' + encodeURIComponent(title), null, 20000,
+      function (ok, data) {
+        if (!ok || !data) {
+          findStatus.innerHTML = 'The catalog didn\'t answer. Check the server connection.';
+          return;
+        }
+        log(JSON.stringify(data, null, 2));
+        if (!(data instanceof Array)) {
+          findStatus.innerHTML = 'Unexpected answer from the catalog — see the log (press 0).';
+          return;
+        }
+        if (!data.length) {
+          findStatus.innerHTML = 'Nothing matched. Try a different spelling or the original title.';
+          emptyInto(findResults, 'No films found.', 'Try the original title.');
+          return;
+        }
+        findStatus.innerHTML = '<b>' + data.length + '</b> result' +
+          (data.length === 1 ? '' : 's') + '. Press OK on a film to download it.';
+        renderFind(data);
+      });
+  }
+
+  function renderFind(films) {
+    findResults.innerHTML = '';
+    for (var i = 0; i < films.length; i++) {
+      findResults.appendChild(findCard(films[i], i));
+    }
+    markRowEnds(findResults);
+  }
+
+  function findCard(f, i) {
+    var title = val(f.title, 'Untitled');
+    var cover = f.cover ? (IMG_BASE + f.cover) : '';
+    var card = document.createElement('article');
+
+    card.className = 'film';
+    card.setAttribute('data-nav', '1');
+    card.setAttribute('tabindex', '0');
+    card.innerHTML =
+      '<div class="frame">' +
+        (cover
+          ? '<img src="' + esc(cover) + '" alt="" />'
+          : '<div class="noart"><i>no artwork</i></div>') +
+      '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + esc(title) + '</div>' +
+        '<div class="foot"><span class="btn btn--amber pullbtn">Download ↓</span></div>' +
+      '</div>';
+
+    // A broken cover must not leave a blank black frame.
+    var img = card.getElementsByTagName('img')[0];
+    if (img) {
+      img.onerror = function () {
+        var frame = card.getElementsByTagName('div')[0];
+        frame.innerHTML = '<div class="noart"><i>no artwork</i></div>';
+      };
+    }
+
+    var label = card.getElementsByTagName('span')[0];
+    card.__activate = function () { pull(f, label); };
+    card.onclick = card.__activate;    // Magic Remote pointer still works
+    return card;
+  }
+
+  function pull(film, label) {
+    label.innerHTML = 'Downloading…';
+    request('POST', API + '/api/download', {
+      title: val(film.title, ''),
+      cover: val(film.cover, null),
+      slug:  val(film.slug, null),
+      id:    film.id
+    }, 20000, function (ok, data) {
+      if (data) { log(JSON.stringify(data, null, 2)); }
+      label.innerHTML = ok ? 'On the shelf ✓' : 'Couldn\'t pull';
+      if (!ok) {
+        findStatus.innerHTML = 'The download didn\'t start. Check the connection.';
+      }
+    });
+  }
+
+  /* ================================ SHELF ================================ */
+
+  function loadShelf() {
+    request('GET', API + '/api/films', null, 15000, function (ok, data) {
+      if (!ok || !(data instanceof Array)) {
+        shelfStatus.innerHTML = 'Can\'t read the shelf.';
+        emptyInto(shelfResults, 'Shelf unreachable.', 'Check that the server is on.');
+        return;
+      }
+      log(JSON.stringify(data, null, 2));
+      renderShelf(data);
+      schedulePoll(data);
+    });
+  }
+
+  function statusOf(f) {
+    return String(val(f.status, '')).toLowerCase();
+  }
+
+  function renderShelf(films) {
+    var ready = 0, i;
+    for (i = 0; i < films.length; i++) {
+      if (statusOf(films[i]) === 'completed') { ready++; }
+    }
+    chip.innerHTML = '<b>' + films.length + '</b> film' +
+      (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready';
+
+    if (!films.length) {
+      shelfStatus.innerHTML = '';
+      emptyInto(shelfResults, 'Your shelf is empty.',
+        'Find a film and pull it down — it will wait here for you.');
+      return;
+    }
+
+    shelfStatus.innerHTML = '<b>' + films.length + '</b> film' +
+      (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready. Press OK to watch.';
+
+    // Keep the focused card focused across a poll redraw, otherwise the
+    // selection jumps back to the top every couple of seconds.
+    var focusedId = null;
+    var act = document.activeElement;
+    if (act && act.getAttribute && act.getAttribute('data-film-id')) {
+      focusedId = act.getAttribute('data-film-id');
+    }
+
+    shelfResults.innerHTML = '';
+    for (i = 0; i < films.length; i++) {
+      shelfResults.appendChild(shelfCard(films[i]));
+    }
+    markRowEnds(shelfResults);
+
+    if (focusedId) {
+      var again = shelfResults.querySelector('[data-film-id="' + focusedId + '"]');
+      if (again) { setFocus(again); }
+    }
+  }
+
+  function shelfCard(f) {
+    var status   = statusOf(f);
+    var playable = (status === 'completed' && !!f.path);
+    var pct      = Math.max(0, Math.min(100, Math.round(Number(val(f.progress, 0)) || 0)));
+    var title    = val(f.title, 'Untitled');
+    var cover    = f.cover ? ('/covers/' + encodeURIComponent(f.cover)) : '';
+
+    var label;
+    if (status === 'completed')        { label = 'On shelf'; }
+    else if (status === 'downloading') { label = 'Downloading ' + pct + '%'; }
+    else                               { label = val(f.status, '—'); }
+
+    var card = document.createElement('article');
+    card.className = 'film';
+    card.setAttribute('data-nav', '1');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('data-film-id', String(f.id));
+
+    card.innerHTML =
+      '<div class="frame">' +
+        (cover
+          ? '<img src="' + esc(cover) + '" alt="" />'
+          : '<div class="noart"><i>no artwork</i></div>') +
+        (playable ? '<div class="play">▶</div>' : '') +
+      '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + esc(title) + '</div>' +
+        '<div class="foot"><span class="badge ' + esc(status) + '">' + esc(label) + '</span></div>' +
+        (status === 'downloading'
+          ? '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'
+          : '') +
+      '</div>';
+
+    var img = card.getElementsByTagName('img')[0];
+    if (img) {
+      img.onerror = function () {
+        var frame = card.getElementsByTagName('div')[0];
+        frame.innerHTML = '<div class="noart"><i>no artwork</i></div>' +
+          (playable ? '<div class="play">▶</div>' : '');
+      };
+    }
+
+    card.__activate = function () {
+      if (playable) { openPlayer(f); }
+      else { shelfStatus.innerHTML = 'This film is not ready yet.'; }
+    };
+    card.onclick = card.__activate;
+    return card;
+  }
+
+  /* The cards are inline-blocks at 31.5% + 2.75% margin, so every third one
+     must drop its right margin or the row overflows and wraps early. */
+  function markRowEnds(container) {
+    var cards = container.getElementsByTagName('article');
+    for (var i = 0; i < cards.length; i++) {
+      if ((i + 1) % 3 === 0) { cards[i].className = cards[i].className + ' endrow'; }
+    }
+  }
+
+  function emptyInto(container, big, msg) {
+    container.innerHTML =
+      '<div class="empty-state"><p class="big">' + esc(big) + '</p><p>' + esc(msg) + '</p></div>';
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function schedulePoll(films) {
+    stopPolling();
+    if (view !== 'shelf' || playerOpen) { return; }
+    var busy = false;
+    for (var i = 0; i < films.length; i++) {
+      if (statusOf(films[i]) === 'downloading') { busy = true; break; }
+    }
+    if (!busy) { return; }
+    pollTimer = setTimeout(loadShelf, POLL_MS);
+  }
+
+  /* ================================ PLAYER =============================== */
+
+  function openPlayer(f) {
+    lastFocusBeforePlayer = document.activeElement;
+    stopPolling();
+    playerOpen = true;
+    playerTitle.innerHTML = esc(val(f.title, ''));
+    video.src = '/movies/' + encodeURIComponent(f.path);
+    playerLayer.className = 'open';
+    try { video.play(); } catch (e) {}
+    try { video.focus(); } catch (e) {}
+  }
+
+  function closePlayer() {
+    playerOpen = false;
+    try { video.pause(); } catch (e) {}
+    video.removeAttribute('src');
+    // Without an explicit load() the decoder keeps the old stream open and the
+    // next title can start with a black picture on some panels.
+    try { video.load(); } catch (e) {}
+    playerLayer.className = '';
+    if (lastFocusBeforePlayer) { setFocus(lastFocusBeforePlayer); }
+    if (view === 'shelf') { loadShelf(); }
+  }
+
+  function togglePlay() {
+    if (video.paused) { try { video.play(); } catch (e) {} }
+    else { try { video.pause(); } catch (e) {} }
+  }
+
+  function seek(delta) {
+    var t = video.currentTime + delta;
+    if (t < 0) { t = 0; }
+    if (video.duration && t > video.duration) { t = video.duration; }
+    try { video.currentTime = t; } catch (e) {}
+  }
+
+  /* ================================= KEYS ================================ */
+
+  document.addEventListener('keydown', function (e) {
+    var code = e.keyCode;   // e.key is Chromium 51; keyCode works everywhere
+
+    if (playerOpen) {
+      if (code === K_BACK || code === K_ESC || code === K_BACKSPACE || code === K_STOP) {
+        e.preventDefault(); closePlayer(); return;
+      }
+      if (code === K_OK || code === K_PLAY || code === K_PAUSE) {
+        e.preventDefault(); togglePlay(); return;
+      }
+      if (code === K_LEFT)  { e.preventDefault(); seek(-SEEK_S); return; }
+      if (code === K_RIGHT) { e.preventDefault(); seek(SEEK_S);  return; }
+      return;
+    }
+
+    // The on-screen keyboard owns left/right while the field has focus, so only
+    // up/down escape it; OK submits.
+    var inField = (document.activeElement === q);
+
+    if (code === K_OK) {
+      e.preventDefault(); activate(); return;
+    }
+    if (code === K_UP)    { e.preventDefault(); move('up');    return; }
+    if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
+    if (code === K_LEFT)  { if (!inField) { e.preventDefault(); move('left');  } return; }
+    if (code === K_RIGHT) { if (!inField) { e.preventDefault(); move('right'); } return; }
+
+    if (code === K_BACK || code === K_BACKSPACE) {
+      if (inField) { return; }                       // backspace edits the query
+      if (view === 'shelf') { e.preventDefault(); showView('find'); return; }
+      return;                                        // let BACK leave the app
+    }
+
+    if (code === K_ZERO || code === K_RED) {         // reveal the booth log
+      e.preventDefault();
+      booth.className = booth.className ? '' : 'open';
+      return;
+    }
+  }, false);
+
+  /* Magic Remote pointer: keep the ring in sync with whatever it lands on. */
+  document.addEventListener('focus', function (e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-nav')) { setFocus(t); }
+  }, true);
+
+  /* ================================= BOOT ================================ */
+
+  tabFind.__activate  = function () { showView('find'); };
+  tabShelf.__activate = function () { showView('shelf'); };
+  tabFind.onclick     = tabFind.__activate;
+  tabShelf.onclick    = tabShelf.__activate;
+  searchBtn.__activate = doSearch;
+  searchBtn.onclick    = doSearch;
+
+  // Cover host for search hits rotates, so it is read from the backend.
+  request('GET', API + '/api/config', null, 8000, function (ok, data) {
+    if (ok && data) { IMG_BASE = val(data.cover_base, ''); }
+  });
+
+  // Prime the shelf count in the header without leaving the search view.
+  request('GET', API + '/api/films', null, 15000, function (ok, data) {
+    if (!ok || !(data instanceof Array)) { chip.innerHTML = 'shelf offline'; return; }
+    var ready = 0;
+    for (var i = 0; i < data.length; i++) {
+      if (statusOf(data[i]) === 'completed') { ready++; }
+    }
+    chip.innerHTML = '<b>' + data.length + '</b> film' +
+      (data.length === 1 ? '' : 's') + ' · ' + ready + ' ready';
+  });
+
+  showView('find');
+})();
+</script>
+</body>
+</html>
