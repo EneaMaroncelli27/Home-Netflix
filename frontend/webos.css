@@ -251,3 +251,86 @@ html,body{
   padding:16px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;
 }
 #booth.open{display:block;}
+
+/* ============================================================
+   THE ACTION SHEET — one overlay, reused
+   ============================================================
+   The desktop card carries two icon buttons in its foot (send to
+   phone, remove). That does not port: a TV has no pointer, so each
+   icon would have to become its own D-pad target sitting inside
+   another D-pad target, and the spatial nav would have to choose
+   between the card and the two 32px boxes drawn on top of it.
+
+   So the card stays a single target and OK opens this sheet
+   instead. One overlay in the document serves every film and every
+   purpose (menu, confirm, QR), which also means the shelf keeps
+   exactly the same node count with 60 films as it had with 6 --
+   the reason to do it this way on a 1.2 GHz TV SoC and not only
+   the reason to do it this way on a remote.
+
+   No transitions and no animations anywhere below: a fade on a
+   full-screen 1280x720 layer is a repaint the panel cannot make
+   smoothly, and a janky fade reads worse than an instant one.
+   ============================================================ */
+
+#modal-layer{
+  display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:70;
+  background:rgba(6,4,3,.90);
+}
+#modal-layer.open{display:block;}
+
+/* Centred with top:50% + translateY rather than flex: centring on
+   Chromium 38 flex is unreliable, and the transform costs nothing. */
+#modal{
+  position:absolute;top:50%;left:50%;
+  width:640px;margin-left:-320px;
+  -webkit-transform:translateY(-50%);transform:translateY(-50%);
+  background:#16110B;border:2px solid #3A2E20;border-radius:8px;
+  padding:26px 36px 24px 36px;text-align:center;
+}
+#modal-title{
+  font-family:"Instrument Serif",Georgia,serif;font-size:34px;line-height:1.15;
+  color:#F3EBDD;
+  /* Hard two-line ceiling: a long film title must not push the QR off screen. */
+  max-height:80px;overflow:hidden;
+}
+#modal-sub{
+  font-family:"Space Mono",monospace;font-size:16px;letter-spacing:.10em;
+  text-transform:uppercase;color:#9A8C78;margin:10px 0 0 0;min-height:22px;
+}
+
+/* ---- Buttons: stacked for a menu, in a row for a confirm ---- */
+#modal-acts{margin:22px 0 0 0;font-size:0;}
+#modal-acts .btn{margin:0 8px;}
+#modal-acts.stack .btn{display:block;width:100%;margin:0 0 12px 0;text-align:center;}
+.btn--ember{background:#C4553D;color:#FFF2EC;}   /* destructive, and only that */
+
+/* ---- QR panel ---- */
+#qr-wrap{display:none;margin:18px 0 0 0;}
+#qr-wrap.on{display:block;}
+/* The code has to survive being read by a phone camera from across the room,
+   so it is printed on white at 288px -- getting on for a quarter of the 1280px
+   canvas, a hand-span on a 55" set -- and the sheet around it is sized to clear
+   720px so nothing ever has to scroll.
+
+   No image-rendering:pixelated here, deliberately. The server sends a 450px
+   code, so this is a DOWNSCALE, and nearest-neighbour downscaling drops whole
+   module rows on the floor -- the code paints but stops scanning. Smooth
+   filtering keeps every module represented. Were the code ever smaller than
+   the box, pixelated would become the right answer again. */
+#qr-card{
+  display:inline-block;padding:14px;background:#F3EBDD;border-radius:6px;
+  width:316px;height:316px;
+}
+#qr-img{
+  display:block;width:288px;height:288px;border:0;
+}
+#qr-state{
+  font-family:"Space Mono",monospace;font-size:18px;letter-spacing:.10em;
+  text-transform:uppercase;color:#E8A33D;margin:16px 0 0 0;min-height:24px;
+}
+#qr-state.err{color:#E8896B;}
+#qr-bytes{
+  font-family:"Space Mono",monospace;font-size:15px;letter-spacing:.08em;
+  color:#6B5F4F;margin:10px 0 0 0;min-height:20px;
+}

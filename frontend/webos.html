@@ -53,6 +53,27 @@
     </div>
   </div>
 
+  <!-- ============ ACTION SHEET ============
+       One overlay serves the film menu, the delete confirm and the
+       send-to-phone code. It lives in the document rather than being built
+       per card so the shelf's node count does not grow with the shelf, and
+       so the QR <img> decode buffer is allocated once and freed on close. -->
+  <div id="modal-layer">
+    <div id="modal">
+      <div id="modal-title"></div>
+      <div id="modal-sub"></div>
+
+      <div id="qr-wrap">
+        <div id="qr-card"><img id="qr-img" alt="" /></div>
+        <p id="qr-state"></p>
+        <div class="track"><div class="fill" id="qr-fill"></div></div>
+        <p id="qr-bytes">—</p>
+      </div>
+
+      <div id="modal-acts"></div>
+    </div>
+  </div>
+
   <!-- ============ PLAYER ============ -->
   <div id="player-layer">
     <div id="player-title"></div>
@@ -101,6 +122,12 @@
   var POLL_MS  = 2000;        // shelf refresh while something is downloading
   var SEEK_S   = 10;
 
+  /* Handoff poll rates. The desktop page asks every 500ms throughout; a TV pays
+     an XHR, a JSON parse and a repaint for each one, so an unscanned code is
+     checked lazily and only a transfer in flight earns the faster rate. */
+  var QR_WAIT_MS   = 2000;
+  var QR_ACTIVE_MS = 1000;
+
   /* webOS remote key codes. The colour buttons and transport keys are only
      delivered on real hardware, so the desktop equivalents are kept alongside
      for testing this page in a normal browser. */
@@ -129,11 +156,27 @@
   var playerLayer = $('player-layer');
   var playerTitle = $('player-title');
   var video       = $('video');
+  var modalLayer  = $('modal-layer');
+  var modal       = $('modal');
+  var modalTitle  = $('modal-title');
+  var modalSub    = $('modal-sub');
+  var modalActs   = $('modal-acts');
+  var qrWrap      = $('qr-wrap');
+  var qrImg       = $('qr-img');
+  var qrState     = $('qr-state');
+  var qrFill      = $('qr-fill');
+  var qrBytes     = $('qr-bytes');
 
   var view = 'find';          // 'find' | 'shelf'
   var playerOpen = false;
   var pollTimer = null;
   var lastFocusBeforePlayer = null;
+
+  var modalOpen = false;
+  var lastFocusBeforeModal = null;
+  var qrTimer = null;
+  var qrToken = null;
+  var qrFilm  = null;
 
   /* --------------------------------------------------------------- helpers */
 
@@ -194,8 +237,15 @@
     return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
   }
 
+  /* While the sheet is up the shelf underneath is still in the document and
+     still visible, so nav has to be scoped to the sheet or the D-pad walks
+     out from under the overlay onto cards the user cannot see. */
+  function navRoot() {
+    return modalOpen ? modal : document;
+  }
+
   function candidates() {
-    var nodes = document.querySelectorAll('[data-nav]');
+    var nodes = navRoot().querySelectorAll('[data-nav]');
     var out = [];
     for (var i = 0; i < nodes.length; i++) {
       if (isVisible(nodes[i])) { out.push(nodes[i]); }
@@ -210,7 +260,8 @@
 
   function current() {
     var el = document.activeElement;
-    if (el && el.getAttribute && el.getAttribute('data-nav') && isVisible(el)) { return el; }
+    var inScope = !modalOpen || (el && modal.contains(el));
+    if (inScope && el && el.getAttribute && el.getAttribute('data-nav') && isVisible(el)) { return el; }
     var c = candidates();
     return c.length ? c[0] : null;
   }
@@ -227,6 +278,9 @@
   /* scrollIntoView is unreliable across these engines (and the boolean form
      jumps the element to the very top), so the container is scrolled by hand. */
   function ensureVisible(el) {
+    // The sheet is fixed and always fully on screen; nudging #scroll for one of
+    // its buttons would only shift the shelf hidden behind it.
+    if (modalOpen) { return; }
     var pad = 60;
     var er = el.getBoundingClientRect();
     var sr = scroll.getBoundingClientRect();
@@ -420,7 +474,7 @@
     }
 
     shelfStatus.innerHTML = '<b>' + films.length + '</b> film' +
-      (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready. Press OK to watch.';
+      (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready. Press OK on a film for options.';
 
     // Keep the focused card focused across a poll redraw, otherwise the
     // selection jumps back to the top every couple of seconds.
@@ -484,8 +538,13 @@
       };
     }
 
+    /* OK no longer plays straight away for a finished film: it opens the sheet,
+       where watching is the first and pre-focused option. That costs one extra
+       press and buys the two actions the desktop puts in icon buttons. */
     card.__activate = function () {
-      if (playable) { openPlayer(f); }
+      // The backend refuses delete and send on anything mid-download, so the
+      // sheet is only worth opening once the film is actually finished.
+      if (status === 'completed') { openFilmSheet(f); }
       else { shelfStatus.innerHTML = 'This film is not ready yet.'; }
     };
     card.onclick = card.__activate;
@@ -512,7 +571,7 @@
 
   function schedulePoll(films) {
     stopPolling();
-    if (view !== 'shelf' || playerOpen) { return; }
+    if (view !== 'shelf' || playerOpen || modalOpen) { return; }
     var busy = false;
     for (var i = 0; i < films.length; i++) {
       if (statusOf(films[i]) === 'downloading') { busy = true; break; }
@@ -558,6 +617,213 @@
     try { video.currentTime = t; } catch (e) {}
   }
 
+  /* ============================= ACTION SHEET =============================
+     The desktop card grew two icon buttons in its foot: send-to-phone and
+     remove. Neither ports to a remote -- they would be D-pad targets nested
+     inside a D-pad target -- so both live behind this sheet instead, and the
+     card stays one target.
+
+     `showSheet` is the only thing that writes the overlay. It rebuilds just
+     the button row (three nodes at most) and leaves the rest of the sheet's
+     DOM alone, so opening a menu is not a layout of the whole overlay.
+     ====================================================================== */
+
+  function mb(n) {
+    return (Number(n) / 1048576).toFixed(1) + ' MB';
+  }
+
+  /* acts: array of { label, kind, run }. kind is '' | 'amber' | 'ember'. */
+  function showSheet(title, sub, acts, stack, showQr) {
+    if (!modalOpen) {
+      lastFocusBeforeModal = document.activeElement;
+      modalOpen = true;
+      stopPolling();                  // the shelf must not redraw under the sheet
+      modalLayer.className = 'open';
+    }
+
+    modalTitle.innerHTML = esc(title);
+    modalSub.innerHTML   = esc(sub);
+    qrWrap.className     = showQr ? 'on' : '';
+    modalActs.className  = stack ? 'stack' : '';
+
+    modalActs.innerHTML = '';
+    var first = null;
+    for (var i = 0; i < acts.length; i++) {
+      var a = acts[i];
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn' + (a.kind ? ' btn--' + a.kind : ' btn--ghost');
+      b.setAttribute('data-nav', '1');
+      b.innerHTML = esc(a.label);
+      b.__activate = a.run;
+      b.onclick = a.run;
+      modalActs.appendChild(b);
+      if (i === 0) { first = b; }
+    }
+    if (first) { setFocus(first); }
+  }
+
+  function closeSheet() {
+    if (!modalOpen) { return; }
+    modalOpen = false;
+    stopQrPoll();
+    qrToken = null;
+    qrFilm  = null;
+    // Drop the code's bitmap rather than leaving a decoded 288px PNG resident.
+    qrImg.removeAttribute('src');
+    qrWrap.className = '';
+    modalLayer.className = '';
+    modalActs.innerHTML = '';
+    if (lastFocusBeforeModal) { setFocus(lastFocusBeforeModal); }
+    if (view === 'shelf' && !playerOpen) { loadShelf(); }
+  }
+
+  function openFilmSheet(f) {
+    var acts = [];
+    if (f.path) {
+      acts.push({ label: 'Watch', kind: 'amber', run: function () {
+        var film = f;
+        closeSheet();
+        openPlayer(film);
+      } });
+    }
+    acts.push({ label: 'Send to phone', kind: '', run: function () { openQrSheet(f); } });
+    acts.push({ label: 'Remove from shelf', kind: 'ember', run: function () { confirmRemove(f); } });
+    acts.push({ label: 'Cancel', kind: '', run: closeSheet });
+
+    showSheet(val(f.title, 'Untitled'), 'On shelf', acts, true, false);
+  }
+
+  /* ------------------------------- REMOVE -------------------------------- */
+
+  /* No window.confirm: it blocks the webOS JS thread and its dialog is not
+     reliably reachable with a D-pad on every set. Cancel is focused first
+     because this is the one action that does not give the film back. */
+  function confirmRemove(f) {
+    showSheet(val(f.title, 'Untitled'),
+      'Delete for good — the file leaves the disk',
+      [
+        { label: 'Keep it',  kind: '',      run: function () { openFilmSheet(f); } },
+        { label: 'Delete',   kind: 'ember', run: function () { doRemove(f); } }
+      ], false, false);
+  }
+
+  function doRemove(f) {
+    showSheet(val(f.title, 'Untitled'), 'Removing…', [], false, false);
+    request('GET', API + '/api/delete?id=' + encodeURIComponent(f.id), null, 20000,
+      function (ok, data, status) {
+        if (data) { log(JSON.stringify(data, null, 2)); }
+        if (ok) {
+          closeSheet();               // closeSheet reloads the shelf and its counts
+          shelfStatus.innerHTML = 'Removed from the shelf.';
+          return;
+        }
+        var why = (data && data.detail) ? data.detail : ('couldn\'t delete (' + status + ')');
+        showSheet(val(f.title, 'Untitled'), why, [
+          { label: 'Back', kind: 'amber', run: function () { openFilmSheet(f); } },
+          { label: 'Close', kind: '', run: closeSheet }
+        ], false, false);
+      });
+  }
+
+  /* ----------------------------- SEND TO PHONE ---------------------------
+     Same two endpoints the desktop qr-phone.html page uses, but inline in the
+     sheet rather than a page of its own: a TV has no address bar to come back
+     from, and navigating away would tear down the whole app to rebuild it.
+
+     The desktop page also fetches /api/films purely to learn the title. Here
+     the film object is already in hand, so that request is dropped.
+     ====================================================================== */
+
+  function openQrSheet(f) {
+    qrFilm = f;
+    mintQr();
+  }
+
+  function mintQr() {
+    var f = qrFilm;
+    stopQrPoll();
+    qrToken = null;
+    qrImg.removeAttribute('src');
+    qrState.className = '';
+    qrState.innerHTML = 'Asking for a code…';
+    qrFill.style.width = '0%';
+    qrBytes.innerHTML = '—';
+
+    showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera',
+      [{ label: 'Close', kind: '', run: closeSheet }], false, true);
+
+    request('POST', API + '/api/qr-download?id=' + encodeURIComponent(f.id), null, 20000,
+      function (ok, data, status) {
+        if (!modalOpen || qrFilm !== f) { return; }      // sheet closed mid-flight
+        if (!ok || !data || !data.token) {
+          qrFail((data && data.detail) ? data.detail : ('couldn\'t mint a code (' + status + ')'));
+          return;
+        }
+        qrToken = data.token;
+        qrImg.src = data.data;
+        qrState.className = '';
+        qrState.innerHTML = 'Waiting for a scan';
+        qrBytes.innerHTML = '0 MB of ' + mb(data.size);
+        showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera', [
+          { label: 'New code', kind: 'amber', run: mintQr },
+          { label: 'Close',    kind: '',      run: closeSheet }
+        ], false, true);
+        qrTimer = setTimeout(pollQr, QR_WAIT_MS);
+      });
+  }
+
+  function qrFail(msg) {
+    stopQrPoll();
+    qrState.className = 'err';
+    qrState.innerHTML = esc(msg);
+  }
+
+  function stopQrPoll() {
+    if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; }
+  }
+
+  /* The host can only see its own outgoing byte count, so it asks. The desktop
+     page asks twice a second; on a TV that is a needless XHR + JSON parse +
+     repaint every 500ms, so a code nobody has scanned yet is checked slowly
+     and only a transfer actually in flight is checked at the faster rate. */
+  function pollQr() {
+    if (!modalOpen || !qrToken) { return; }
+    request('GET', API + '/api/qr-progress/' + encodeURIComponent(qrToken), null, 10000,
+      function (ok, s, status) {
+        if (!modalOpen || !qrToken) { return; }
+        if (status === 404) { qrFail('That code expired — mint a new one'); return; }
+        if (!ok || !s) {
+          qrTimer = setTimeout(pollQr, QR_WAIT_MS);      // transient blip: keep the last view
+          return;
+        }
+
+        var pct = Math.max(0, Math.min(100, Math.round(Number(val(s.pct, 0)) || 0)));
+
+        if (s.state !== 'waiting') {
+          qrFill.style.width = pct + '%';
+          qrBytes.innerHTML = mb(s.sent) + ' of ' + mb(s.size);
+        }
+
+        if (s.state === 'done') {
+          qrState.className = '';
+          qrState.innerHTML = 'Landed on the phone ✓';
+          stopQrPoll();
+          return;
+        }
+        if (s.state === 'aborted') {
+          // Not fatal: the endpoint serves ranges, so the phone can pick it up.
+          qrState.className = 'err';
+          qrState.innerHTML = 'Interrupted at ' + pct + '% — waiting for the phone';
+          qrTimer = setTimeout(pollQr, QR_ACTIVE_MS);
+          return;
+        }
+        qrState.className = '';
+        qrState.innerHTML = (s.state === 'active') ? ('Sending — ' + pct + '%') : 'Waiting for a scan';
+        qrTimer = setTimeout(pollQr, s.state === 'active' ? QR_ACTIVE_MS : QR_WAIT_MS);
+      });
+  }
+
   /* ================================= KEYS ================================ */
 
   document.addEventListener('keydown', function (e) {
@@ -572,6 +838,20 @@
       }
       if (code === K_LEFT)  { e.preventDefault(); seek(-SEEK_S); return; }
       if (code === K_RIGHT) { e.preventDefault(); seek(SEEK_S);  return; }
+      return;
+    }
+
+    // The sheet is modal: it owns every key while it is up, so BACK closes it
+    // instead of leaving the app and the arrows never reach the shelf behind.
+    if (modalOpen) {
+      if (code === K_BACK || code === K_ESC || code === K_BACKSPACE || code === K_STOP) {
+        e.preventDefault(); closeSheet(); return;
+      }
+      if (code === K_OK)    { e.preventDefault(); activate();    return; }
+      if (code === K_UP)    { e.preventDefault(); move('up');    return; }
+      if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
+      if (code === K_LEFT)  { e.preventDefault(); move('left');  return; }
+      if (code === K_RIGHT) { e.preventDefault(); move('right'); return; }
       return;
     }
 
