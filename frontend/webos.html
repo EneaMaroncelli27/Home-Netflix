@@ -128,6 +128,10 @@
   var QR_WAIT_MS   = 2000;
   var QR_ACTIVE_MS = 1000;
 
+  /* How long to wait for the platform's own history.back() after a Back press
+     before walking back by hand. See the BACK KEY block further down. */
+  var BACK_GRACE_MS = 260;
+
   /* webOS remote key codes. The colour buttons and transport keys are only
      delivered on real hardware, so the desktop equivalents are kept alongside
      for testing this page in a normal browser. */
@@ -326,6 +330,78 @@
     if (typeof el.__activate === 'function') { el.__activate(); return; }
     if (el.click) { el.click(); }
   }
+
+  /* ============================== THE BACK KEY ============================
+     Symptom: BACK during playback killed the whole app instead of closing the
+     player, even though the keydown handler below claims 461 and calls
+     preventDefault on it.
+
+     Cause is in webOS-webapp/index.html, in its own words:
+
+         // replace() keeps the app out of history so the remote's back button
+         // leaves the app instead of bouncing back to this shim.
+         window.location.replace('http://' + host + APP_PATH);
+
+     The shim lands here with location.replace(), so this page is the only
+     entry in the session history. webOS's Web App Manager handles the remote's
+     Back key itself, in native code, before and regardless of anything the
+     page does with the keydown: if the webview can go back it goes back, and
+     if it cannot -- exactly our case -- it closes the app. preventDefault on a
+     DOM event cannot cancel a decision taken outside the DOM.
+
+     So the fix is not to fight for the key, it is to give WAM somewhere to go.
+     Every layer this app opens (the shelf view, the sheet, the player) pushes a
+     history entry, so Back has an entry to consume and arrives back here as a
+     popstate. At the outermost level the stack is empty again, WAM finds
+     nothing to go back to, and the app closes -- which is what Back should do
+     there, and preserves the behaviour the shim's comment was after.
+
+     One entry per layer, and popstate is the only thing that tears a layer
+     down, so the history depth and the visible layer cannot drift apart.
+     ====================================================================== */
+
+  var histStack = [];        // level names, outermost first
+  var popSeen   = 0;         // popstate counter, for the fallback below
+
+  function pushLevel(name) {
+    histStack.push(name);
+    // Same URL, so nothing reloads and no address is exposed on a TV.
+    try { history.pushState({ hn: histStack.length }, ''); } catch (e) {}
+  }
+
+  /* Sheet -> player is a swap, not a nesting: one layer leaves as the other
+     arrives, so the entry is reused rather than a second one pushed. */
+  function swapLevel(name) {
+    if (histStack.length) { histStack[histStack.length - 1] = name; }
+    else { pushLevel(name); }
+  }
+
+  function goBack() {
+    if (histStack.length) {
+      try { history.back(); return; } catch (e) {}
+    }
+    exitApp();
+  }
+
+  function exitApp() {
+    /* Only reached when the app asks to leave with nothing left to close --
+       normally WAM has already done it. webOSSystem is the webOS 4+ name,
+       PalmSystem the older one, and neither exists in a desktop browser. */
+    var sys = window.webOSSystem || window.PalmSystem;
+    if (sys && typeof sys.platformBack === 'function') {
+      try { sys.platformBack(); return; } catch (e) {}
+    }
+    try { window.close(); } catch (e) {}
+  }
+
+  window.addEventListener('popstate', function () {
+    popSeen++;
+    var level = histStack.pop();
+    if (level === 'player')     { tearDownPlayer(); return; }
+    if (level === 'sheet')      { tearDownSheet();  return; }
+    if (level === 'shelf')      { showView('find'); return; }
+    exitApp();                  // popped past our own entries
+  }, false);
 
   /* ================================ VIEWS ================================ */
 
@@ -593,7 +669,9 @@
     try { video.focus(); } catch (e) {}
   }
 
-  function closePlayer() {
+  /* Only popstate calls this: the player is closed by walking the history
+     back, so the entry and the layer disappear together. */
+  function tearDownPlayer() {
     playerOpen = false;
     try { video.pause(); } catch (e) {}
     video.removeAttribute('src');
@@ -639,6 +717,7 @@
       modalOpen = true;
       stopPolling();                  // the shelf must not redraw under the sheet
       modalLayer.className = 'open';
+      pushLevel('sheet');             // gives the Back key an entry to consume
     }
 
     modalTitle.innerHTML = esc(title);
@@ -663,7 +742,10 @@
     if (first) { setFocus(first); }
   }
 
-  function closeSheet() {
+  /* Called by popstate, or directly with handOff=true when the player is
+     taking the screen over from the sheet -- in that case the focus does not
+     go back to the card and the shelf is not reloaded behind the video. */
+  function tearDownSheet(handOff) {
     if (!modalOpen) { return; }
     modalOpen = false;
     stopQrPoll();
@@ -674,6 +756,7 @@
     qrWrap.className = '';
     modalLayer.className = '';
     modalActs.innerHTML = '';
+    if (handOff) { return; }
     if (lastFocusBeforeModal) { setFocus(lastFocusBeforeModal); }
     if (view === 'shelf' && !playerOpen) { loadShelf(); }
   }
@@ -683,13 +766,14 @@
     if (f.path) {
       acts.push({ label: 'Watch', kind: 'amber', run: function () {
         var film = f;
-        closeSheet();
+        tearDownSheet(true);
+        swapLevel('player');          // one layer replaces the other, one entry
         openPlayer(film);
       } });
     }
     acts.push({ label: 'Send to phone', kind: '', run: function () { openQrSheet(f); } });
     acts.push({ label: 'Remove from shelf', kind: 'ember', run: function () { confirmRemove(f); } });
-    acts.push({ label: 'Cancel', kind: '', run: closeSheet });
+    acts.push({ label: 'Cancel', kind: '', run: goBack });
 
     showSheet(val(f.title, 'Untitled'), 'On shelf', acts, true, false);
   }
@@ -714,14 +798,14 @@
       function (ok, data, status) {
         if (data) { log(JSON.stringify(data, null, 2)); }
         if (ok) {
-          closeSheet();               // closeSheet reloads the shelf and its counts
+          goBack();                   // popstate tears the sheet down and reloads
           shelfStatus.innerHTML = 'Removed from the shelf.';
           return;
         }
         var why = (data && data.detail) ? data.detail : ('couldn\'t delete (' + status + ')');
         showSheet(val(f.title, 'Untitled'), why, [
           { label: 'Back', kind: 'amber', run: function () { openFilmSheet(f); } },
-          { label: 'Close', kind: '', run: closeSheet }
+          { label: 'Close', kind: '', run: goBack }
         ], false, false);
       });
   }
@@ -751,7 +835,7 @@
     qrBytes.innerHTML = '—';
 
     showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera',
-      [{ label: 'Close', kind: '', run: closeSheet }], false, true);
+      [{ label: 'Close', kind: '', run: goBack }], false, true);
 
     request('POST', API + '/api/qr-download?id=' + encodeURIComponent(f.id), null, 20000,
       function (ok, data, status) {
@@ -767,7 +851,7 @@
         qrBytes.innerHTML = '0 MB of ' + mb(data.size);
         showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera', [
           { label: 'New code', kind: 'amber', run: mintQr },
-          { label: 'Close',    kind: '',      run: closeSheet }
+          { label: 'Close',    kind: '',      run: goBack }
         ], false, true);
         qrTimer = setTimeout(pollQr, QR_WAIT_MS);
       });
@@ -828,11 +912,31 @@
 
   document.addEventListener('keydown', function (e) {
     var code = e.keyCode;   // e.key is Chromium 51; keyCode works everywhere
+    var inField = (document.activeElement === q);
+
+    /* ---- BACK: one branch for every layer ----
+       461 is handled here for the whole app rather than per layer, because the
+       press is not really ours to handle: webOS turns it into a history.back()
+       inside the Web App Manager, and the popstate listener above is what
+       actually closes the layer. So this must NOT preventDefault -- cancelling
+       the event is what would stop the history move we want.
+
+       The timer is for the sets that only deliver the key and leave the history
+       alone. If no popstate has arrived shortly after the press, walk back by
+       hand. Comparing the counter rather than setting a flag means a
+       platform-driven pop and a manual one can never both fire. */
+    if (code === K_BACK) {
+      var seen = popSeen;
+      setTimeout(function () { if (popSeen === seen) { goBack(); } }, BACK_GRACE_MS);
+      return;
+    }
+    /* ESC and STOP are ours outright, and so is BACKSPACE unless it is editing
+       the query. Desktop testing rides on ESC and BACKSPACE. */
+    if (code === K_ESC || code === K_STOP || (code === K_BACKSPACE && !inField)) {
+      e.preventDefault(); goBack(); return;
+    }
 
     if (playerOpen) {
-      if (code === K_BACK || code === K_ESC || code === K_BACKSPACE || code === K_STOP) {
-        e.preventDefault(); closePlayer(); return;
-      }
       if (code === K_OK || code === K_PLAY || code === K_PAUSE) {
         e.preventDefault(); togglePlay(); return;
       }
@@ -841,12 +945,8 @@
       return;
     }
 
-    // The sheet is modal: it owns every key while it is up, so BACK closes it
-    // instead of leaving the app and the arrows never reach the shelf behind.
+    // The sheet is modal: the arrows must never reach the shelf behind it.
     if (modalOpen) {
-      if (code === K_BACK || code === K_ESC || code === K_BACKSPACE || code === K_STOP) {
-        e.preventDefault(); closeSheet(); return;
-      }
       if (code === K_OK)    { e.preventDefault(); activate();    return; }
       if (code === K_UP)    { e.preventDefault(); move('up');    return; }
       if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
@@ -857,8 +957,6 @@
 
     // The on-screen keyboard owns left/right while the field has focus, so only
     // up/down escape it; OK submits.
-    var inField = (document.activeElement === q);
-
     if (code === K_OK) {
       e.preventDefault(); activate(); return;
     }
@@ -866,12 +964,6 @@
     if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
     if (code === K_LEFT)  { if (!inField) { e.preventDefault(); move('left');  } return; }
     if (code === K_RIGHT) { if (!inField) { e.preventDefault(); move('right'); } return; }
-
-    if (code === K_BACK || code === K_BACKSPACE) {
-      if (inField) { return; }                       // backspace edits the query
-      if (view === 'shelf') { e.preventDefault(); showView('find'); return; }
-      return;                                        // let BACK leave the app
-    }
 
     if (code === K_ZERO || code === K_RED) {         // reveal the booth log
       e.preventDefault();
@@ -888,8 +980,17 @@
 
   /* ================================= BOOT ================================ */
 
-  tabFind.__activate  = function () { showView('find'); };
-  tabShelf.__activate = function () { showView('shelf'); };
+  /* The shelf is a level too, so Back leaves it for the search view instead
+     of leaving the app. Pressing the Find tab is the same move, hence the
+     history walk rather than a direct showView. */
+  tabFind.__activate  = function () {
+    if (view === 'shelf') { goBack(); } else { showView('find'); }
+  };
+  tabShelf.__activate = function () {
+    if (view === 'shelf') { return; }
+    pushLevel('shelf');
+    showView('shelf');
+  };
   tabFind.onclick     = tabFind.__activate;
   tabShelf.onclick    = tabShelf.__activate;
   searchBtn.__activate = doSearch;
