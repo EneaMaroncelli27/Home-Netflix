@@ -16,7 +16,7 @@
       <div class="brand">
         <p class="eyebrow">Private screening room</p>
         <h1 class="wordmark">Home-<em>Netflix</em></h1>
-        <p class="tagline">Find a film. Pull it down to your <b>shelf</b>.</p>
+        <p class="tagline">Find a film or a series. Pull it down to your <b>shelf</b>.</p>
       </div>
       <div class="masthead-side">
         <span class="chip live"><span class="dot"></span> Catalog online</span>
@@ -26,7 +26,7 @@
     <hr class="rule" />
 
     <div class="bar">
-      <input id="q" placeholder="a title… e.g. Project Hail Mary" autofocus aria-label="Search a film title" />
+      <input id="q" placeholder="a title… e.g. Project Hail Mary" autofocus aria-label="Search a film or series title" />
       <button class="btn btn--amber" id="searchBtn">Find</button>
     </div>
 
@@ -39,6 +39,37 @@
       <pre id="raw">—</pre>
     </details>
   </main>
+
+  <!-- ============================================================
+       THE SEASON SHEET — opens when a series card is clicked.
+       Season 1 is loaded by default; the pills switch seasons.
+       Episodes can be pulled one at a time, or the whole season
+       handed to /api/download_season in one go.
+       ============================================================ -->
+  <div class="modal" id="seasonModal" role="dialog" aria-modal="true" aria-labelledby="smTitle">
+    <div class="sheet">
+      <div class="head">
+        <div class="headtext">
+          <p class="now">Series</p>
+          <div class="t" id="smTitle"></div>
+        </div>
+        <button class="btn btn--ghost" id="smClose" aria-label="Close season list">Close ✕</button>
+      </div>
+
+      <div class="seasonbar">
+        <div class="seasons" id="smSeasons" role="tablist" aria-label="Seasons"></div>
+        <button class="btn btn--amber" id="smAll">Download season ↓</button>
+      </div>
+
+      <p class="statusline" id="smStatus">—</p>
+
+      <div class="eprail">
+        <button class="railnav prev" id="smPrev" type="button" aria-label="Previous episodes">‹</button>
+        <ol class="eptrack" id="smEps"></ol>
+        <button class="railnav next" id="smNext" type="button" aria-label="More episodes">›</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const API = location.origin.startsWith("http") ? location.origin : "http://localhost:8000";
@@ -54,6 +85,10 @@
     const results = document.getElementById("results");
     const raw = document.getElementById("raw");
 
+    // A series has type "tv" and a season count; a film has type "movie".
+    const isSeries = (f) => f && f.type === "tv";
+    const seasonCount = (f) => Math.max(1, Number(f && f.season_c) || 1);
+
     async function search() {
       const title = q.value.trim();
       if (!title) { statusEl.textContent = "Type a title first."; q.focus(); return; }
@@ -68,7 +103,7 @@
           return;
         }
         statusEl.innerHTML = data.length
-          ? `<b>${data.length}</b> film${data.length === 1 ? "" : "s"} found. Pull one down to your shelf.`
+          ? `<b>${data.length}</b> title${data.length === 1 ? "" : "s"} found. Pull one down to your shelf.`
           : "Nothing matched. Try a different spelling or the original title.";
         render(data);
       } catch (e) {
@@ -78,25 +113,37 @@
 
     function render(films) {
       films.forEach((f, i) => {
+        const series = isSeries(f);
         const card = document.createElement("article");
-        card.className = "film";
+        card.className = series ? "film series" : "film";
         card.style.setProperty("--i", i);
         const cover = f.cover ? IMG_BASE + f.cover : "";
+        const n = seasonCount(f);
         card.innerHTML = `
           <div class="frame">
             ${cover
               ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover" loading="lazy" decoding="async"
                    onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
               : `<span>no artwork</span>`}
+            ${series ? `<div class="play"><span>≡</span></div>` : ``}
           </div>
           <div class="info">
             <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
             <div class="foot">
-              <button class="btn btn--amber pull">Download ↓</button>
+              ${series
+                ? `<button class="btn btn--amber pull">Episodes →</button>
+                   <span class="badge">${n} season${n === 1 ? "" : "s"}</span>`
+                : `<button class="btn btn--amber pull">Download ↓</button>`}
             </div>
           </div>`;
         if (!cover) card.querySelector(".frame").classList.add("empty");
-        card.querySelector(".pull").onclick = (e) => pull(f, e.currentTarget);
+        if (series) {
+          const open = () => openSeries(f);
+          card.querySelector(".pull").onclick = open;
+          card.querySelector(".frame").onclick = open;
+        } else {
+          card.querySelector(".pull").onclick = (e) => pull(f, e.currentTarget);
+        }
         results.appendChild(card);
       });
     }
@@ -113,11 +160,257 @@
         const data = await res.json().catch(() => ({}));
         raw.textContent = JSON.stringify(data, null, 2);
         btn.textContent = res.ok ? "On the shelf ✓" : "Couldn't pull";
+        if (!res.ok) btn.disabled = false;
       } catch (e) {
         btn.textContent = "Couldn't pull";
+        btn.disabled = false;
         statusEl.textContent = "The download didn't start. Check the connection and try again.";
       }
     }
+
+    /* ---------- The season sheet ---------- */
+
+    const sm = {
+      el: document.getElementById("seasonModal"),
+      title: document.getElementById("smTitle"),
+      seasons: document.getElementById("smSeasons"),
+      eps: document.getElementById("smEps"),
+      status: document.getElementById("smStatus"),
+      all: document.getElementById("smAll"),
+      close: document.getElementById("smClose"),
+      rail: document.querySelector(".eprail"),
+      prev: document.getElementById("smPrev"),
+      next: document.getElementById("smNext"),
+      film: null,          // the series currently on show
+      season: 1,           // season being displayed
+      cache: new Map(),    // season number -> episode array (one fetch per season)
+      queued: new Set(),   // episode ids already handed to /api/download
+      seasonsQueued: new Set(), // season numbers already handed to /api/download_season
+      returnFocus: null,
+      run: 0,              // guards against a slow fetch landing after a season switch
+    };
+
+    function openSeries(film) {
+      sm.film = film;
+      sm.cache.clear();
+      sm.queued.clear();
+      sm.seasonsQueued.clear();
+      sm.returnFocus = document.activeElement;
+      sm.title.textContent = film.title ?? "Untitled";
+      buildSeasonPills(seasonCount(film));
+      sm.el.classList.add("open");
+      document.body.style.overflow = "hidden";
+      sm.close.focus();
+      showSeason(1);
+    }
+
+    function closeSeries() {
+      sm.el.classList.remove("open");
+      document.body.style.overflow = "";
+      sm.eps.innerHTML = "";
+      sm.film = null;
+      if (sm.returnFocus && sm.returnFocus.focus) sm.returnFocus.focus();
+    }
+
+    function buildSeasonPills(n) {
+      sm.seasons.innerHTML = "";
+      for (let s = 1; s <= n; s++) {
+        const b = document.createElement("button");
+        b.className = "season";
+        b.type = "button";
+        b.setAttribute("role", "tab");
+        b.dataset.season = String(s);
+        b.textContent = `S${String(s).padStart(2, "0")}`;
+        b.onclick = () => showSeason(s);
+        sm.seasons.appendChild(b);
+      }
+    }
+
+    function markSeasonPill(s) {
+      sm.seasons.querySelectorAll(".season").forEach((b) => {
+        const on = Number(b.dataset.season) === s;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+    }
+
+    function syncSeasonButton() {
+      const done = sm.seasonsQueued.has(sm.season);
+      sm.all.disabled = done;
+      sm.all.textContent = done
+        ? `Season ${sm.season} queued ✓`
+        : `Download season ${sm.season} ↓`;
+    }
+
+    async function showSeason(s) {
+      sm.season = s;
+      const run = ++sm.run;
+      markSeasonPill(s);
+      syncSeasonButton();
+
+      if (sm.cache.has(s)) {
+        renderEpisodes(sm.cache.get(s));
+        return;
+      }
+
+      sm.eps.innerHTML = "";
+      sm.status.innerHTML = `Reading the reel for <b>season ${s}</b>…`;
+      try {
+        const res = await fetch(`${API}/api/episodes?season=${encodeURIComponent(s)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sm.film),
+        });
+        const data = await res.json().catch(() => null);
+        if (run !== sm.run) return;                       // a newer season won
+        raw.textContent = JSON.stringify(data, null, 2);
+        if (!res.ok || !Array.isArray(data)) {
+          sm.status.textContent = (data && data.detail)
+            ? `Season ${s} didn't load: ${data.detail}`
+            : `Season ${s} didn't load — see the booth log below.`;
+          return;
+        }
+        sm.cache.set(s, data);
+        renderEpisodes(data);
+      } catch (e) {
+        if (run !== sm.run) return;
+        sm.status.textContent = "The catalog didn't answer. Check the connection and try again.";
+      }
+    }
+
+    function renderEpisodes(eps) {
+      sm.eps.innerHTML = "";
+      sm.eps.scrollLeft = 0;
+      if (!eps.length) {
+        sm.status.textContent = `Season ${sm.season} came back empty.`;
+        syncRailNav();
+        return;
+      }
+      sm.status.innerHTML = `<b>${eps.length}</b> episode${eps.length === 1 ? "" : "s"} in season ${sm.season}.`;
+      eps.forEach((ep, i) => {
+        const li = document.createElement("li");
+        li.className = "epcard";
+        li.style.setProperty("--i", i);
+        const cover = ep.cover ? IMG_BASE + ep.cover : "";
+        li.innerHTML = `
+          <div class="epthumb${cover ? "" : " empty"}">
+            ${cover ? `<img src="${cover}" alt="" loading="lazy" decoding="async"
+                 onerror="this.parentElement.classList.add('empty');this.remove()" />` : ``}
+            <span class="epno">E${String(i + 1).padStart(2, "0")}</span>
+          </div>
+          <div class="epbody">
+            <div class="epname" title="${escapeHtml(ep.title ?? "")}">${escapeHtml(ep.title ?? "Untitled")}</div>
+            <button class="btn btn--amber epget">Download ↓</button>
+          </div>`;
+        const btn = li.querySelector(".epget");
+        if (sm.queued.has(ep.id)) { btn.disabled = true; btn.textContent = "Queued ✓"; }
+        btn.onclick = () => pullEpisode(ep, btn);
+        sm.eps.appendChild(li);
+      });
+      syncRailNav();
+    }
+
+    /* The rail scrolls by just under a full width so a card stays half in view
+       as an affordance that there is more to the right. */
+    function railStep() {
+      return Math.max(200, sm.eps.clientWidth * 0.82);
+    }
+
+    function scrollRail(dir) {
+      sm.eps.scrollBy({ left: dir * railStep(), behavior: "smooth" });
+    }
+
+    function syncRailNav() {
+      const max = sm.eps.scrollWidth - sm.eps.clientWidth;
+      const x = sm.eps.scrollLeft;
+      // 4px of slack: sub-pixel widths mean scrollLeft never lands exactly on max.
+      const atStart = x <= 4, atEnd = x >= max - 4;
+      sm.prev.classList.toggle("gone", atStart);
+      sm.next.classList.toggle("gone", atEnd);
+      // The edge fades only earn their keep where there is more reel to reveal.
+      sm.rail.classList.toggle("atstart", atStart);
+      sm.rail.classList.toggle("atend", atEnd);
+    }
+
+    async function pullEpisode(ep, btn) {
+      btn.disabled = true;
+      btn.textContent = "Pulling…";
+      try {
+        const res = await fetch(`${API}/api/download`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ep),
+        });
+        const data = await res.json().catch(() => ({}));
+        raw.textContent = JSON.stringify(data, null, 2);
+        if (res.ok) {
+          sm.queued.add(ep.id);
+          btn.textContent = "Queued ✓";
+        } else {
+          btn.textContent = "Couldn't pull";
+          btn.disabled = false;
+        }
+      } catch (e) {
+        btn.textContent = "Couldn't pull";
+        btn.disabled = false;
+      }
+    }
+
+    async function pullSeason() {
+      const s = sm.season;
+      const film = sm.film;
+      sm.all.disabled = true;
+      sm.all.textContent = `Queueing season ${s}…`;
+      try {
+        // The backend re-reads the season itself, so this can sit for a few seconds.
+        const res = await fetch(`${API}/api/download_season?season=${encodeURIComponent(s)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(film),
+        });
+        const data = await res.json().catch(() => ({}));
+        raw.textContent = JSON.stringify(data, null, 2);
+        if (!res.ok) {
+          if (sm.season === s) { sm.all.textContent = `Couldn't queue season ${s}`; sm.all.disabled = false; }
+          return;
+        }
+        sm.seasonsQueued.add(s);
+        // Every episode of that season is now on its way — reflect it on each row.
+        (sm.cache.get(s) || []).forEach((ep) => sm.queued.add(ep.id));
+        if (sm.season === s) {
+          syncSeasonButton();
+          renderEpisodes(sm.cache.get(s) || []);
+        }
+      } catch (e) {
+        if (sm.season === s) { sm.all.textContent = `Couldn't queue season ${s}`; sm.all.disabled = false; }
+      }
+    }
+
+    sm.all.onclick = pullSeason;
+    sm.close.onclick = closeSeries;
+    sm.prev.onclick = () => scrollRail(-1);
+    sm.next.onclick = () => scrollRail(1);
+    sm.eps.addEventListener("scroll", syncRailNav, { passive: true });
+    window.addEventListener("resize", syncRailNav);
+    // A vertical wheel over the rail drives it sideways — the sheet itself has
+    // nothing to scroll, so the gesture would otherwise be dead.
+    sm.eps.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      const max = sm.eps.scrollWidth - sm.eps.clientWidth;
+      if (max <= 0) return;
+      e.preventDefault();
+      sm.eps.scrollLeft += e.deltaY;
+    }, { passive: false });
+
+    sm.el.onclick = (e) => { if (e.target === sm.el) closeSeries(); };
+    document.addEventListener("keydown", (e) => {
+      if (!sm.el.classList.contains("open")) return;
+      if (e.key === "Escape") { closeSeries(); return; }
+      // Let the season pills keep their own arrow behaviour when focused.
+      if (e.target && e.target.classList && e.target.classList.contains("season")) return;
+      if (e.key === "ArrowRight") { e.preventDefault(); scrollRail(1); }
+      if (e.key === "ArrowLeft")  { e.preventDefault(); scrollRail(-1); }
+    });
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) =>

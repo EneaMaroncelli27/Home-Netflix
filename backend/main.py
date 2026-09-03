@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 from pydantic import BaseModel
-from backend.scripts.search import search_by_title
+from backend.scripts.search import search_by_title, get_episodes
 from backend.scripts.download import download_film
 from backend.scripts.urlgetter import URL, COVER_URL
 from backend.db import list_films, delete_film_db, get_path, get_cover, get_status
@@ -47,7 +47,9 @@ class FilmIn(BaseModel):
     title: str
     cover: str | None = None
     slug: str | None = None
-    id: int
+    id: str
+    type : str
+    season_c : int = 0
 
 
 @app.get("/")
@@ -62,10 +64,23 @@ def search(title: str):
     films = search_by_title(title)
     return films
 
+@app.post('/api/episodes')
+def episodes(film : FilmIn, season : int):
+    if not season:
+        raise HTTPException(status_code=400,detail="Season number required")
+    episodes = get_episodes(film,season)
+    return episodes
 
 @app.post("/api/download")
 async def download(film: FilmIn, background_tasks : BackgroundTasks):
     background_tasks.add_task(download_film,film) # download_film only reads .id and .title
+    return {"status": "ok"}
+
+@app.post('/api/download_season')
+async def download_s(film: FilmIn, season : int, background_tasks : BackgroundTasks):
+    episodes = get_episodes(film,season)
+    for ep in episodes:
+        background_tasks.add_task(download_film,ep) # download_film only reads .id and .title
     return {"status": "ok"}
 
 @app.get('/api/config')
@@ -89,10 +104,8 @@ def del_film(id):
         (MOVIES_DIR / Path(film_name).name).unlink(missing_ok=True)
     if cover_name:
         (COVERS_DIR / Path(cover_name).name).unlink(missing_ok=True)
-
     delete_film_db(id)
     return {"status":"ok"}
-
 
 # utlis for browsing files in export
 def _within(child: Path, parent: Path) -> bool:
@@ -183,7 +196,9 @@ def export(id, new_path : str):
     path = get_path(id)
     if path == None:
         raise HTTPException(status_code=400, detail="No film was found with that id")
-    src = MOVIES_DIR / Path(path)
+    # .name, like del_film: pathlib's '/' discards MOVIES_DIR when the right
+    # operand is absolute, so a poisoned row would otherwise reach outside.
+    src = MOVIES_DIR / Path(path).name
     dest = Path(new_path)
     if not src.is_file():
         raise HTTPException(status_code=404, detail="The source isn't a file or doesn't exist")
@@ -207,7 +222,9 @@ def qr_download(id, request: Request):
     path = get_path(id)
     if path == None:
             raise HTTPException(status_code=400, detail="No film was found with that id")
-    src = MOVIES_DIR / Path(path)
+    # .name, like del_film: pathlib's '/' discards MOVIES_DIR when the right
+    # operand is absolute, so a poisoned row would otherwise reach outside.
+    src = MOVIES_DIR / Path(path).name
     if not src.is_file():
         raise HTTPException(status_code=404, detail="That film is missing on disk")
 
@@ -277,7 +294,7 @@ async def phone_download(sess: str, request: Request):
     if session["state"] == "active":
         raise HTTPException(status_code=409, detail="This code is already downloading somewhere")
 
-    src = MOVIES_DIR / Path(session["path"])
+    src = MOVIES_DIR / Path(session["path"]).name
     if not src.is_file():
         session["state"] = "aborted"
         raise HTTPException(status_code=404, detail="The film went missing from disk")

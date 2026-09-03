@@ -5,6 +5,7 @@ import requests
 from playwright.async_api import async_playwright
 from backend.scripts.film import Film
 from backend.scripts.urlgetter import URL, COVER_URL
+from backend.scripts.utlis import safe_name
 from backend.db import add_film, update_status, get_status, delete_film_db, update_progress
 
 log = logging.getLogger("download")
@@ -38,7 +39,12 @@ async def download_film(movie : Film):
 
         await page.route("**/*", block_assets)
         page.on("request", handle_req)
-        await page.goto(URL + f'/it/watch/{movie.id}', timeout=20000)
+        if movie.type == "episode":
+            episode_id = movie.id.split('-')[1]
+            film_id = movie.id.split('-')[0]
+            await page.goto(URL + f'/it/watch/{film_id}?e={episode_id}', timeout=20000)
+        else: 
+            await page.goto(URL + f'/it/watch/{movie.id}', timeout=20000)
         try:
             await asyncio.wait_for(found.wait(), timeout=10.0)
         except asyncio.TimeoutError:
@@ -87,7 +93,11 @@ async def download_film(movie : Film):
         # per-fragment progress); fall back to merge only if no muxed variant exists.
         'format': 'best/bestvideo+bestaudio',
         'logger': FwdLogger(),
-        'outtmpl' : f'Movies/{movie.title}.mp4',
+        # Must match db.add_film's `stem` exactly, or the row and the file on
+        # disk name different things. yt-dlp does NOT sanitise the literal part
+        # of a template, and its `paths` option does not contain a traversing
+        # one either, so this is the only thing keeping the write inside Movies/.
+        'outtmpl' : f'Movies/{safe_name(movie.title)}-{safe_name(movie.id)}.mp4',
         'progress_hooks' : [custom_progress_hook],
         'concurrent_fragment_downloads': 16,
         'hls_prefer_native': True,
@@ -101,7 +111,7 @@ async def download_film(movie : Film):
     def _blocking_download():
         resp = requests.get(COVER_URL + movie.cover)
         if resp.status_code == 200:
-            with open('Covers/' + movie.title + '.webp', 'wb') as f:
+            with open(f'Covers/{safe_name(movie.title)}-{safe_name(movie.id)}.webp', 'wb') as f:
                 f.write(resp.content)
         log.info("starting yt-dlp for %s url=%s", movie.title, download_url)
         with yt_dlp.YoutubeDL(options) as ydl:

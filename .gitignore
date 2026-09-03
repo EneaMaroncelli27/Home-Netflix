@@ -4,3 +4,5 @@ Covers/**
 *.db
 .env
 webOS-webapp/appinfo.json
+webOS-webapp/*.ipk
+ISA.md

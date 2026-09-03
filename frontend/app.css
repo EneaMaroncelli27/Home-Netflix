@@ -337,3 +337,129 @@ body{
 
 /* Both card icons live at the right-hand end of the foot. */
 .film .foot .tools{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+
+/* ============================================================
+   SERIES — cards that open a season rail instead of downloading
+   ============================================================ */
+.film.series .frame{cursor:pointer;}
+.film.series:hover .play{opacity:1;}
+.film.series .play span{font-size:26px;padding-left:0;font-weight:700;}
+.film.series .foot .badge{flex-shrink:0;}
+
+/* ---- The season sheet (reuses .modal as its backdrop) ---- */
+.modal .sheet{
+  width:min(1180px,100%);display:flex;flex-direction:column;
+  background:var(--velvet);border:1px solid var(--line);border-radius:8px;
+  padding:22px 26px 24px;box-shadow:0 30px 90px -30px #000,0 0 70px -30px var(--glow);
+}
+.modal .sheet .head{align-items:flex-start;}
+.modal .sheet .headtext{min-width:0;}
+.modal .sheet .head .t{word-break:break-word;}
+.modal .sheet .head .btn{white-space:nowrap;}
+
+/* season pills + the whole-season button */
+.seasonbar{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:14px 0 0;border-top:1px solid var(--line);
+}
+.seasons{display:flex;gap:7px;overflow-x:auto;padding:2px 0 6px;flex:1;min-width:0;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent;}
+.seasons::-webkit-scrollbar{height:5px;}
+.seasons::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px;}
+.season{
+  font-family:var(--mono);font-size:.74rem;font-weight:700;letter-spacing:.1em;
+  color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:999px;
+  padding:7px 14px;cursor:pointer;flex-shrink:0;transition:.14s var(--ease);
+}
+.season:hover{color:var(--bulb);border-color:var(--bulb);}
+.season.on{color:#1a1206;background:var(--bulb);border-color:var(--bulb);
+  box-shadow:0 0 24px -8px var(--glow);}
+.seasonbar .btn{flex-shrink:0;}
+
+/* ============================================================
+   THE EPISODE RAIL — a horizontal reel of 16:9 frames.
+   Snap points land one card at a time; the arrows page by ~a
+   screenful and fade out at each end.
+   ============================================================ */
+.eprail{position:relative;margin:4px -6px 0;}
+.eptrack{
+  list-style:none;margin:0;padding:6px;
+  display:flex;gap:16px;
+  overflow-x:auto;overscroll-behavior-x:contain;
+  scroll-snap-type:x mandatory;scroll-padding-left:6px;
+  scrollbar-width:none;
+}
+.eptrack::-webkit-scrollbar{display:none;}
+
+.epcard{
+  flex:0 0 232px;scroll-snap-align:start;
+  display:flex;flex-direction:column;
+  background:var(--raise);border:1px solid var(--line);border-radius:5px;
+  overflow:hidden;transition:.2s var(--ease);
+  animation:rise .4s var(--ease) both;animation-delay:calc(var(--i,0)*40ms);
+}
+.epcard:hover{border-color:var(--bulb);transform:translateY(-4px);
+  box-shadow:0 16px 40px -18px rgba(0,0,0,.8),0 0 34px -10px var(--glow);}
+
+.epthumb{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden;}
+.epthumb img{width:100%;height:100%;object-fit:cover;display:block;
+  filter:brightness(.8) saturate(.9);transition:.3s var(--ease);}
+.epcard:hover .epthumb img{filter:brightness(1.02) saturate(1);transform:scale(1.04);}
+.epthumb::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(120% 120% at 50% 0,transparent 45%,rgba(0,0,0,.6));}
+.epthumb.empty{background:repeating-linear-gradient(45deg,#0c0a08,#0c0a08 9px,#100c09 9px,#100c09 18px);}
+
+/* episode number sits on the frame, like a reel label */
+.epno{
+  position:absolute;left:8px;bottom:8px;z-index:2;
+  font-family:var(--mono);font-size:.64rem;font-weight:700;letter-spacing:.14em;
+  color:var(--bulb);background:rgba(14,11,9,.78);backdrop-filter:blur(2px);
+  border:1px solid rgba(232,163,61,.35);border-radius:2px;padding:3px 7px;
+}
+
+.epbody{padding:11px 12px 13px;display:flex;flex-direction:column;gap:10px;flex:1;}
+.epname{
+  font-family:var(--serif);font-size:1.14rem;line-height:1.12;color:var(--screen);
+  /* two lines, then ellipsis — keeps every card the same height */
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.epcard .epget{margin-top:auto;width:100%;justify-content:center;
+  font-size:.82rem;padding:9px 12px;}
+
+/* ---- Rail arrows ---- */
+.railnav{
+  position:absolute;top:calc(6px + (232px * 9 / 16) / 2);transform:translateY(-50%);
+  z-index:4;width:38px;height:38px;flex-shrink:0;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--sans);font-size:1.5rem;line-height:1;padding-bottom:3px;
+  color:#1a1206;background:var(--bulb);border:0;border-radius:50%;
+  box-shadow:0 0 26px -6px var(--glow),0 6px 18px -8px #000;
+  transition:.16s var(--ease);
+}
+.railnav:hover{background:var(--filament);box-shadow:0 0 34px -4px var(--glow);}
+.railnav.prev{left:-8px;}
+.railnav.next{right:-8px;}
+.railnav.gone{opacity:0;pointer-events:none;}
+
+/* fade the reel out where it runs under the arrows */
+.eprail::before,.eprail::after{content:"";position:absolute;top:0;bottom:0;width:46px;
+  z-index:3;pointer-events:none;transition:opacity .16s var(--ease);}
+.eprail::before{left:0;background:linear-gradient(90deg,var(--velvet),transparent);}
+.eprail::after{right:0;background:linear-gradient(270deg,var(--velvet),transparent);}
+.eprail.atstart::before{opacity:0;}
+.eprail.atend::after{opacity:0;}
+
+@media (max-width:640px){
+  .modal{padding:14px;}
+  .modal .sheet{padding:16px 15px 18px;}
+  .epcard{flex:0 0 176px;}
+  .railnav{top:calc(6px + (176px * 9 / 16) / 2);width:32px;height:32px;font-size:1.25rem;}
+  .epname{font-size:1rem;}
+  .seasonbar .btn{width:100%;justify-content:center;}
+  .eprail::before,.eprail::after{width:24px;}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .epcard{animation:none;}
+  .eptrack{scroll-behavior:auto;}
+}

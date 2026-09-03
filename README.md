@@ -1,6 +1,6 @@
 # Home-Netflix
 
-A small self-hosted app that lets you search a streaming catalog, pull a film down to local disk, watch it from your own "shelf" once it's downloaded, and export finished files out to an external drive or folder. Runs as a single Docker container with a FastAPI backend and a plain HTML/JS frontend — no build step, no external database.
+A small self-hosted app that lets you search a streaming catalog, pull a film down to local disk, watch it from your own "shelf" once it's downloaded, and export finished files out to an external drive or folder. Runs as a single Docker container with a FastAPI backend and a plain HTML/JS frontend — no build step, no external database. Finished films can also be handed off to a phone over the LAN by scanning a QR code, and there is a second, TV-shaped frontend plus a small launcher app for LG webOS televisions.
 
 For an explanation of how it works internally (backend structure, download pipeline, domain rotation handling, filesystem browsing, etc.), see [INDEPTH.md](INDEPTH.md).
 
@@ -38,7 +38,28 @@ For an explanation of how it works internally (backend structure, download pipel
 
 **Export** — `/offline.html` → Export. Pick a finished film, then choose a destination folder using the built-in folder browser (limited to your home directory, `~/Videos`, and any mounted external drive), and press Export. This moves the file out of the app and removes it from the shelf.
 
+**Send to phone** — the QR button on a finished film's card opens `/qr-phone.html`. The host mints a one-shot code holding a LAN link to that film; point a phone camera at it and the file downloads straight to the phone. The page shows the transfer live, byte count and all, because the host counts what it pushes out. Transfers are resumable — if the phone loses WiFi partway, re-opening the link picks up where it stopped rather than starting over. Each code is good for one transfer; press "New code" to mint another. The phone has to be on the same network as the host, since the link points at the host's LAN address.
+
+**Remove from shelf** — the trash button on a finished film's card deletes the video file, its cover art and its database row, after a confirm. Only finished films can be removed; the backend refuses anything still downloading.
+
 If the app can't reach the internet, it automatically falls back to an offline-friendly landing page.
+
+## Watching on a webOS TV
+
+The desktop pages are written for evergreen Chrome and will not run on a television, so the TV gets its own build of the same app at `/webos.html` — same backend, same endpoints, written in ES5 and driven entirely by the remote's D-pad instead of a mouse. It carries the search view, the shelf, the video player, remove-from-shelf and send-to-phone, all reachable with arrows, OK and Back. Point any webOS browser at `http://<host>:8000/webos.html` and it works as-is; the launcher below only exists so the television has an icon to press.
+
+`webOS-webapp/` is that launcher: a tiny web app you install on the TV once. It holds no application logic at all — on launch it hunts for the server on the LAN (last host that worked, then its build-time defaults, then a sweep of `192.168.1.*` and `192.168.0.*`) and redirects to `/webos.html` on whichever machine answers. This is because the host's address comes from DHCP and cannot be baked in at build time. If nothing answers, it shows a recovery screen where the address can be typed in with the remote, and remembers it for next time.
+
+To install it: copy `webOS-webapp/appinfo.json.example` to `webOS-webapp/appinfo.json` and fill in your own `id` and `title` (this file is gitignored, so each install keeps its own). Set `SEED_HOSTS` near the top of the script in `webOS-webapp/index.html` to your server's LAN address — this only saves the app a network sweep, it is not required.
+
+Then install it with **webOS Dev Manager** (the desktop GUI — https://github.com/webosbrew/dev-manager-desktop), which is the easier route than the `ares-*` command line:
+
+1. Install Developer Mode on the TV (LG Content Store → Developer Mode app) and switch it on, or use webosbrew's rooted setup if the TV is already rooted.
+2. Open Dev Manager, add the TV by its LAN IP, and pair it with the passphrase the Developer Mode app shows on screen.
+3. Go to the **Apps** tab → **Install from local file**, and pick the `.ipk`.
+4. The app then sits on the TV's home row like any other; launch it with the remote.
+
+Dev Manager can also package a folder into an `.ipk` for you, so no local SDK install is needed. Two prebuilt `.ipk` files are checked in under `webOS-webapp/` for reference; build your own rather than installing those, since they carry someone else's app id and seed host.
 
 ## Data and storage
 
