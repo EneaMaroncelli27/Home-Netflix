@@ -34,6 +34,8 @@ For an explanation of how it works internally (backend structure, download pipel
 
 **Find a film** — the home page (`/`). Type a title and press Find. Results come from the live catalog; press "Download" on a result to start pulling it to disk in the background.
 
+**Series** — a search result that is a series shows a season count and an "Episodes" button instead of "Download". Open it and you get the season list: pick a season, then pull a single episode with the button on its card, or take the whole season at once with "Download season". Episodes land on the shelf as ordinary entries, named for the episode, and play and export exactly like a film. There is no series grouping on the shelf yet — a downloaded season shows up as one entry per episode.
+
 **My shelf** — `/offline.html`. Shows every film that's downloading or finished. In-progress downloads show a live progress bar. Click a finished film's cover to play it in the built-in video player.
 
 **Export** — `/offline.html` → Export. Pick a finished film, then choose a destination folder using the built-in folder browser (limited to your home directory, `~/Videos`, and any mounted external drive), and press Export. This moves the file out of the app and removes it from the shelf.
@@ -46,7 +48,11 @@ If the app can't reach the internet, it automatically falls back to an offline-f
 
 ## Watching on a webOS TV
 
-The desktop pages are written for evergreen Chrome and will not run on a television, so the TV gets its own build of the same app at `/webos.html` — same backend, same endpoints, written in ES5 and driven entirely by the remote's D-pad instead of a mouse. It carries the search view, the shelf, the video player, remove-from-shelf and send-to-phone, all reachable with arrows, OK and Back. Point any webOS browser at `http://<host>:8000/webos.html` and it works as-is; the launcher below only exists so the television has an icon to press.
+The desktop pages are written for evergreen Chrome and will not run on a television, so the TV gets its own build of the same app at `/webos.html` — same backend, same endpoints, written in ES5 and driven entirely by the remote's D-pad instead of a mouse. It carries the search view, series and episodes, the shelf, the video player, remove-from-shelf and send-to-phone, all reachable with arrows, OK and Back. Point any webOS browser at `http://<host>:8000/webos.html` and it works as-is; the launcher below only exists so the television has an icon to press.
+
+Series work the same way as on the desktop: OK on a series opens a full-screen season view with the seasons across the top and a reel of episodes underneath. Left and right walk the reel and it scrolls to follow, up and down move between the seasons and the episodes, OK pulls the episode down, and "Download season" takes the lot. Back closes the reel and returns to the search results.
+
+Playing a film shows a progress bar along the bottom with the elapsed and total time. ◀ and ▶ scrub along it: tap for ten seconds at a time, or hold and the jump grows — ten seconds, then thirty, then a minute, then five — so you can cross a whole film in a couple of seconds and still nudge back four seconds for a line you missed. While you're moving, the bar shows where you'd land and how far the jump is ("Scrubbing +46:39"); the film keeps playing and only actually jumps a moment after you stop, or straight away if you press OK. OK otherwise plays and pauses, and Back closes the player. The bar fades out a few seconds after the last press so it isn't sitting on the picture, and any press brings it back; it stays put whenever the film is paused.
 
 `webOS-webapp/` is that launcher: a tiny web app you install on the TV once. It holds no application logic at all — on launch it hunts for the server on the LAN (last host that worked, then its build-time defaults, then a sweep of `192.168.1.*` and `192.168.0.*`) and redirects to `/webos.html` on whichever machine answers. This is because the host's address comes from DHCP and cannot be baked in at build time. If nothing answers, it shows a recovery screen where the address can be typed in with the remote, and remembers it for next time.
 

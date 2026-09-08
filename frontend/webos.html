@@ -33,7 +33,7 @@
         <div class="bar">
           <div class="cell grow">
             <input id="q" data-nav="1" type="text" autocomplete="off"
-                   placeholder="a title… e.g. Interstellar" aria-label="Search a film title" />
+                   placeholder="a title… e.g. Interstellar" aria-label="Search a film or series title" />
           </div>
           <div class="cell">
             <button class="btn btn--amber" id="searchBtn" data-nav="1" type="button">Find</button>
@@ -74,11 +74,69 @@
     </div>
   </div>
 
-  <!-- ============ PLAYER ============ -->
+  <!-- ============ SERIES LAYER ============
+       A layer of its own rather than a mode of the action sheet above: that
+       sheet is a fixed 640px box built for a stacked menu, and a rail of
+       300px episode cards inside it would show one and a half episodes. This
+       gets the full canvas at the same 5% overscan as the app.
+
+       The rail arrows are pointer affordances and edge markers only -- they
+       carry no data-nav, because the D-pad walks the episode cards themselves
+       and the rail scrolls to follow. -->
+  <div id="series-layer">
+    <div id="series-inner">
+
+      <div class="serieshead">
+        <div class="cell">
+          <p class="seriesnow">Series</p>
+          <div class="seriestitle" id="seriesTitle"></div>
+        </div>
+        <div class="cell act">
+          <button class="btn btn--ghost" id="seriesClose" data-nav="1" type="button">Close ✕</button>
+        </div>
+      </div>
+
+      <div class="seasonbar">
+        <div class="cell pad">
+          <div class="seasons" id="seasonPills"></div>
+        </div>
+        <div class="cell act">
+          <button class="btn btn--amber" id="seasonAll" data-nav="1" type="button">Download season ↓</button>
+        </div>
+      </div>
+
+      <p class="statusline" id="seriesStatus">—</p>
+
+      <div class="eprail" id="eprail">
+        <button class="railnav prev gone" id="railPrev" type="button" tabindex="-1" aria-hidden="true">‹</button>
+        <div class="eptrack" id="epTrack"></div>
+        <button class="railnav next gone" id="railNext" type="button" tabindex="-1" aria-hidden="true">›</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ PLAYER ============
+       The desktop player is a plain <video controls> and lets the browser draw
+       the scrub bar. That does not port: webOS's native control strip is built
+       for a pointer and is not reliably reachable with a D-pad, which is why
+       the video below carries no `controls` attribute. The bar is drawn here
+       instead and driven by the same ◀ ▶ that already seek. -->
   <div id="player-layer">
     <div id="player-title"></div>
     <video id="video" preload="metadata"></video>
-    <div id="player-hint">OK play/pause · ◀ ▶ skip 10s · BACK close</div>
+    <div id="player-ui">
+      <div id="player-bar">
+        <span class="pt" id="player-now">0:00</span>
+        <div class="track" id="player-track">
+          <div class="buf" id="player-buf"></div>
+          <div class="fill" id="player-fill"></div>
+          <div class="knob" id="player-knob"></div>
+        </div>
+        <span class="pt" id="player-dur">--:--</span>
+      </div>
+      <div id="player-hint">◀ ▶ scrub · OK play/pause · BACK close</div>
+    </div>
   </div>
 
 <script>
@@ -120,13 +178,27 @@
 
   var IMG_BASE = '';          // cover host for SEARCH hits; filled from /api/config
   var POLL_MS  = 2000;        // shelf refresh while something is downloading
-  var SEEK_S   = 10;
+
+  /* Scrubbing. The ladder is what makes a long film crossable: keep the D-pad
+     held and the step grows, so a two-hour film takes a couple of seconds
+     rather than seven hundred presses. Let go for SCRUB_ACCEL_MS and it drops
+     back to fine steps, so landing on an exact scene stays possible.
+     SCRUB_COMMIT_MS is how long the remote must go quiet before the seek
+     actually happens -- see nudgeScrub for why the seek is deferred at all. */
+  var SCRUB_STEPS     = [10, 30, 60, 300];
+  var SCRUB_ACCEL_MS  = 700;
+  var SCRUB_COMMIT_MS = 550;
+  var HINT = '◀ ▶ scrub · OK play/pause · BACK close';
 
   /* Handoff poll rates. The desktop page asks every 500ms throughout; a TV pays
      an XHR, a JSON parse and a repaint for each one, so an unscanned code is
      checked lazily and only a transfer in flight earns the faster rate. */
   var QR_WAIT_MS   = 2000;
   var QR_ACTIVE_MS = 1000;
+
+  /* How long the transport strip stays up after the last press. Long enough to
+     read a timestamp after a seek, short enough not to sit on the picture. */
+  var PLAYER_UI_MS = 4000;
 
   /* How long to wait for the platform's own history.back() after a Back press
      before walking back by hand. See the BACK KEY block further down. */
@@ -160,6 +232,14 @@
   var playerLayer = $('player-layer');
   var playerTitle = $('player-title');
   var video       = $('video');
+  var playerUI    = $('player-ui');
+  var playerNow   = $('player-now');
+  var playerDur   = $('player-dur');
+  var playerFill  = $('player-fill');
+  var playerBuf   = $('player-buf');
+  var playerKnob  = $('player-knob');
+  var playerTrack = $('player-track');
+  var playerHint  = $('player-hint');
   var modalLayer  = $('modal-layer');
   var modal       = $('modal');
   var modalTitle  = $('modal-title');
@@ -170,17 +250,50 @@
   var qrState     = $('qr-state');
   var qrFill      = $('qr-fill');
   var qrBytes     = $('qr-bytes');
+  var seriesLayer = $('series-layer');
+  var seriesTitle = $('seriesTitle');
+  var seriesClose = $('seriesClose');
+  var seasonPills = $('seasonPills');
+  var seasonAll   = $('seasonAll');
+  var seriesStatus= $('seriesStatus');
+  var eprail      = $('eprail');
+  var epTrack     = $('epTrack');
+  var railPrev    = $('railPrev');
+  var railNext    = $('railNext');
 
   var view = 'find';          // 'find' | 'shelf'
   var playerOpen = false;
   var pollTimer = null;
   var lastFocusBeforePlayer = null;
+  var playerUITimer = null;
+
+  /* Scrub state. `scrubTarget` is a PREVIEW position: the bar is drawn from it
+     while the remote is moving, and the video is only actually seeked once, on
+     commit. */
+  var scrubbing = false;
+  var scrubTarget = 0;
+  var scrubTimer = null;
+  var scrubRuns = 0;          // consecutive quick presses, drives the step ladder
+  var scrubLastAt = 0;
 
   var modalOpen = false;
   var lastFocusBeforeModal = null;
   var qrTimer = null;
   var qrToken = null;
   var qrFilm  = null;
+
+  /* Series state. Plain objects, not Map/Set: neither is safe on Chromium 38,
+     so a season's episodes live at seriesCache['s' + n] and a queued id at
+     seriesQueued['e' + id]. The 's'/'e' prefixes keep a numeric id from
+     colliding with an Object.prototype member name. */
+  var seriesOpen = false;
+  var seriesFilm = null;
+  var seriesSeason = 1;
+  var seriesCache = {};       // 's<n>' -> episode array; one fetch per season
+  var seriesQueued = {};      // 'e<id>' -> true, episodes already handed over
+  var seasonQueued = {};      // 's<n>'  -> true, whole seasons already queued
+  var seriesRun = 0;          // guards a slow fetch landing after a season switch
+  var lastFocusBeforeSeries = null;
 
   /* --------------------------------------------------------------- helpers */
 
@@ -197,6 +310,42 @@
 
   function log(text) {
     booth.textContent = String(text).slice(0, 4000);
+  }
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* A series carries type "tv" and a season count; a film carries "movie",
+     and an episode minted by /api/episodes carries "episode". */
+  function isSeries(f) { return !!f && f.type === 'tv'; }
+
+  function seasonCount(f) {
+    var n = Math.floor(Number(val(f && f.season_c, 0)) || 0);
+    return n > 1 ? n : 1;
+  }
+
+  /* Every POST body the backend takes is a FilmIn, and FilmIn grew two
+     REQUIRED fields with the series work: `type` and `season_c`. The payload
+     this file used to send carried neither, so FastAPI rejected it with a 422
+     before the handler ever ran -- which is why nothing on the TV downloaded
+     any more. One builder now, so the body and the model cannot drift apart
+     again the next time the model gains a field. `id` is a string server-side
+     as of the same change (an episode's is "<film>-<episode>"), hence the
+     String(). */
+  function filmPayload(f) {
+    return {
+      title: val(f.title, ''),
+      cover: val(f.cover, null),
+      slug:  val(f.slug, null),
+      id:    String(val(f.id, '')),
+      type:  val(f.type, 'movie'),
+      season_c: Math.floor(Number(val(f.season_c, 0)) || 0)
+    };
+  }
+
+  /* FastAPI answers a validation failure with a LIST in `detail`, not a
+     string, so a blind concat would print "[object Object]" at the user. */
+  function detailOf(data) {
+    return (data && typeof data.detail === 'string') ? data.detail : '';
   }
 
   /* One XHR helper for every call. done(ok, parsedBody, httpStatus). */
@@ -241,11 +390,14 @@
     return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
   }
 
-  /* While the sheet is up the shelf underneath is still in the document and
-     still visible, so nav has to be scoped to the sheet or the D-pad walks
-     out from under the overlay onto cards the user cannot see. */
+  /* While an overlay is up the view underneath is still in the document and
+     still visible, so nav has to be scoped to the overlay or the D-pad walks
+     out from under it onto cards the user cannot see. The sheet wins over the
+     series layer because the sheet is the one that can open on top. */
   function navRoot() {
-    return modalOpen ? modal : document;
+    if (modalOpen) { return modal; }
+    if (seriesOpen) { return seriesLayer; }
+    return document;
   }
 
   function candidates() {
@@ -262,10 +414,16 @@
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r };
   }
 
+  /* Distance between two 1-D spans, 0 when they overlap. */
+  function gap(a1, a2, b1, b2) {
+    var d = Math.max(a1, b1) - Math.min(a2, b2);
+    return d > 0 ? d : 0;
+  }
+
   function current() {
     var el = document.activeElement;
-    var inScope = !modalOpen || (el && modal.contains(el));
-    if (inScope && el && el.getAttribute && el.getAttribute('data-nav') && isVisible(el)) { return el; }
+    var inScope = !!el && navRoot().contains(el);
+    if (inScope && el.getAttribute && el.getAttribute('data-nav') && isVisible(el)) { return el; }
     var c = candidates();
     return c.length ? c[0] : null;
   }
@@ -285,6 +443,9 @@
     // The sheet is fixed and always fully on screen; nudging #scroll for one of
     // its buttons would only shift the shelf hidden behind it.
     if (modalOpen) { return; }
+    // The series layer is fixed too, but two of its strips scroll SIDEWAYS,
+    // so a focus move in there needs the horizontal version instead.
+    if (seriesOpen) { ensureVisibleH(el); return; }
     var pad = 60;
     var er = el.getBoundingClientRect();
     var sr = scroll.getBoundingClientRect();
@@ -295,32 +456,192 @@
     }
   }
 
+  /* The episode rail and the season strip are the only two things in this app
+     that scroll on the x axis, and neither is reachable by any other means: a
+     card scrolled off the end of the reel is still focusable, so following the
+     focus is the whole of the rail's scrolling behaviour. Everything else in
+     the series layer is always fully on screen and needs no nudge. */
+  function ensureVisibleH(el) {
+    var box = null;
+    if (epTrack.contains(el))          { box = epTrack; }
+    else if (seasonPills.contains(el)) { box = seasonPills; }
+    if (!box) { return; }
+
+    var pad = 24;
+    var er = el.getBoundingClientRect();
+    var br = box.getBoundingClientRect();
+    if (er.left < br.left + pad) {
+      box.scrollLeft -= (br.left + pad - er.left);
+    } else if (er.right > br.right - pad) {
+      box.scrollLeft += (er.right - (br.right - pad));
+    }
+    if (box === epTrack) { syncRailNav(); }
+  }
+
+  /* ---- Tracks: containers walked in DOM order, not scored geometrically ----
+
+     The scoring below only knows "nearest thing in the pressed direction",
+     which is wrong at the edge of any run of cards. At the last card in a row
+     of the grid there is no card to the right, so the best remaining candidate
+     was the Find button up in the masthead: RIGHT dropped the D-pad out of the
+     grid mid-row onto a control with nothing further right of it. The episode
+     rail had the same fault one layer down, and worse -- RIGHT off the end of
+     the reel landed on Close, which is the one control in that layer you do not
+     want to arrive at by accident.
+
+     A run of cards is read in order, and the DOM already holds that order, so a
+     horizontal move inside one is just the previous or next child. In the grid
+     that falls into the next row at the end of a row, the way reading does.
+
+     `stopAtEnds` decides what happens when the walk runs out. The grid and the
+     rail stop: there is nothing to their left or right that a sideways press
+     should reach, and UP/DOWN are still the way out. The season strip
+     deliberately does NOT stop -- the button that takes the whole season sits
+     at the end of that same row, and is exactly what RIGHT should reach after
+     the last pill. */
+  var TRACKS = [
+    { cls: 'shelf',   tag: 'article', stopAtEnds: true  },
+    { cls: 'eptrack', tag: 'article', stopAtEnds: true  },
+    { cls: 'seasons', tag: 'button',  stopAtEnds: false }
+  ];
+
+  /* Nearest track ancestor. Element.closest() is Chromium 41. */
+  function trackOf(el) {
+    while (el && el !== document) {
+      if (el.className && typeof el.className === 'string') {
+        var c = ' ' + el.className + ' ';
+        for (var i = 0; i < TRACKS.length; i++) {
+          if (c.indexOf(' ' + TRACKS[i].cls + ' ') >= 0) {
+            return { box: el, def: TRACKS[i] };
+          }
+        }
+      }
+      el = el.parentNode;
+    }
+    return null;
+  }
+
+  /* The element one step along `from`'s track, `from` itself to stay put, or
+     null to let the geometric scoring handle it. */
+  function gridStep(from, dir) {
+    var t = trackOf(from);
+    if (!t) { return null; }
+    var kids = t.box.getElementsByTagName(t.def.tag);
+    var list = [], i;
+    for (i = 0; i < kids.length; i++) {
+      if (isVisible(kids[i])) { list.push(kids[i]); }
+    }
+    for (i = 0; i < list.length; i++) {
+      if (list[i] === from) {
+        var n = i + (dir === 'right' ? 1 : -1);
+        if (n >= 0 && n < list.length) { return list[n]; }
+        return t.def.stopAtEnds ? from : null;
+      }
+    }
+    return null;
+  }
+
+  /* A scrolling track keeps most of its children clipped out of sight, and
+     `isVisible` still counts them: they have boxes, just not ones you can see.
+
+     Walking onto one from INSIDE the same track is fine -- gridStep moves in
+     DOM order and the track scrolls to follow. Arriving on one from OUTSIDE is
+     not: RIGHT from the Close button would otherwise land in the middle of the
+     reel, on whichever episode the rail happened to be scrolled to, and the
+     focus ring would be sitting somewhere off screen.
+
+     .shelf is a track too but does not scroll itself -- #scroll does, and the
+     grid's own box covers every row -- so cards below the fold stay reachable
+     and DOWN still works down a long grid. */
+  function reachableFromOutside(el, fromTrack) {
+    var t = trackOf(el);
+    if (!t) { return true; }
+    if (fromTrack && t.box === fromTrack.box) { return true; }
+    var r = el.getBoundingClientRect();
+    var br = t.box.getBoundingClientRect();
+    return r.right > br.left + 1 && r.left < br.right - 1 &&
+           r.bottom > br.top + 1 && r.top < br.bottom - 1;
+  }
+
   function move(dir) {
     var from = current();
     if (!from) { return; }
+
+    if (dir === 'left' || dir === 'right') {
+      var stepped = gridStep(from, dir);
+      if (stepped) { setFocus(stepped); return; }
+    }
+
     var a = centre(from);
+    var horizontal = (dir === 'left' || dir === 'right');
+    var fromTrack = trackOf(from);
     var list = candidates();
     var best = null, bestScore = Infinity;
+    var bestRow = null, bestRowScore = Infinity;
 
     for (var i = 0; i < list.length; i++) {
       var el = list[i];
       if (el === from) { continue; }
+      if (!reachableFromOutside(el, fromTrack)) { continue; }
       var b = centre(el);
       var dx = b.x - a.x, dy = b.y - a.y;
       var along, across;
 
-      if (dir === 'left')       { along = -dx; across = Math.abs(dy); }
-      else if (dir === 'right') { along =  dx; across = Math.abs(dy); }
-      else if (dir === 'up')    { along = -dy; across = Math.abs(dx); }
-      else                      { along =  dy; across = Math.abs(dx); }
+      var acrossCentre;
+      if (dir === 'left')       { along = -dx; acrossCentre = Math.abs(dy); }
+      else if (dir === 'right') { along =  dx; acrossCentre = Math.abs(dy); }
+      else if (dir === 'up')    { along = -dy; acrossCentre = Math.abs(dx); }
+      else                      { along =  dy; acrossCentre = Math.abs(dx); }
 
       if (along <= 1) { continue; }                 // not in the pressed direction
-      // Sideways drift is penalised so a move stays in its row/column when it can.
-      var score = along + across * 2.2;
+
+      /* UP and DOWN must LEAVE the row, the mirror of LEFT and RIGHT staying on
+         it. Cards in one row are not all the same height -- a series card
+         carries a season badge its neighbours do not -- so a shorter card
+         alongside has a higher centre and read as "above" its taller neighbour.
+         UP from the third column stepped sideways into the second instead of
+         going up, which is also why the Find button could never be reached:
+         every UP out of the grid was spent on that detour first. */
+      if (!horizontal) {
+        var overlapV = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+        if (overlapV > 2) { continue; }
+      }
+
+      /* Drift is measured between the box EDGES, not their centres: two boxes
+         that overlap on the perpendicular axis are lined up, whatever their
+         widths. Centres cannot express that. The search field spans nearly the
+         full row, so its centre sits far to the right of every card in the left
+         column -- by centre distance the tabs above it scored better, and UP
+         from the grid jumped clean over the search bar. With the field and the
+         Find button then unreachable sideways too, there was no way back to a
+         new search without leaving the view. */
+      across = gap(dir === 'up' || dir === 'down' ? a.r.left : a.r.top,
+                   dir === 'up' || dir === 'down' ? a.r.right : a.r.bottom,
+                   dir === 'up' || dir === 'down' ? b.r.left : b.r.top,
+                   dir === 'up' || dir === 'down' ? b.r.right : b.r.bottom);
+
+      /* The centre distance survives as a hairline tiebreak: the field and the
+         Find button both overlap a right-hand card, and without this the field
+         would win on document order every time and the button stay unreachable. */
+      var score = along + across * 2.2 + acrossCentre * 0.01;
       if (score < bestScore) { bestScore = score; best = el; }
+
+      /* Row-mates: two boxes whose vertical extents overlap sit on the same
+         line. LEFT and RIGHT move along a line and nowhere else -- the `* 2.2`
+         penalty above is only a weighting, and a weighting is not enough. From
+         the last season pill an episode card 17px right and 270px down scored
+         better than the season button 890px right on the same line, so RIGHT
+         fell out of the pill strip into the reel; from Close it dived into the
+         reel the same way. A sideways press that has nowhere to go sideways now
+         does nothing, which is what a remote should do -- UP and DOWN are how
+         you leave a row, and they still reach everything. */
+      if (horizontal && Math.abs(dy) < (a.r.height + b.r.height) / 2) {
+        if (score < bestRowScore) { bestRowScore = score; bestRow = el; }
+      }
     }
 
-    if (best) { setFocus(best); }
+    var pick = horizontal ? bestRow : best;
+    if (pick) { setFocus(pick); }
   }
 
   function activate() {
@@ -399,6 +720,7 @@
     var level = histStack.pop();
     if (level === 'player')     { tearDownPlayer(); return; }
     if (level === 'sheet')      { tearDownSheet();  return; }
+    if (level === 'series')     { tearDownSeries(); return; }
     if (level === 'shelf')      { showView('find'); return; }
     exitApp();                  // popped past our own entries
   }, false);
@@ -448,11 +770,12 @@
         }
         if (!data.length) {
           findStatus.innerHTML = 'Nothing matched. Try a different spelling or the original title.';
-          emptyInto(findResults, 'No films found.', 'Try the original title.');
+          emptyInto(findResults, 'Nothing found.', 'Try the original title.');
           return;
         }
         findStatus.innerHTML = '<b>' + data.length + '</b> result' +
-          (data.length === 1 ? '' : 's') + '. Press OK on a film to download it.';
+          (data.length === 1 ? '' : 's') +
+          '. Press OK on a film to pull it down, or on a series for its episodes.';
         renderFind(data);
       });
   }
@@ -466,11 +789,16 @@
   }
 
   function findCard(f, i) {
-    var title = val(f.title, 'Untitled');
-    var cover = f.cover ? (IMG_BASE + f.cover) : '';
-    var card = document.createElement('article');
+    var title  = val(f.title, 'Untitled');
+    var cover  = f.cover ? (IMG_BASE + f.cover) : '';
+    var series = isSeries(f);
+    var n      = seasonCount(f);
+    var card   = document.createElement('article');
 
-    card.className = 'film';
+    /* A series is not downloadable as one thing, so its card does not offer
+       to: OK opens the reel instead. The glyph on the frame reuses the shelf's
+       play badge, so "this card opens something" reads the same in both grids. */
+    card.className = series ? 'film series' : 'film';
     card.setAttribute('data-nav', '1');
     card.setAttribute('tabindex', '0');
     card.innerHTML =
@@ -478,41 +806,327 @@
         (cover
           ? '<img src="' + esc(cover) + '" alt="" />'
           : '<div class="noart"><i>no artwork</i></div>') +
+        (series ? '<div class="play">≡</div>' : '') +
       '</div>' +
       '<div class="info">' +
         '<div class="name">' + esc(title) + '</div>' +
-        '<div class="foot"><span class="btn btn--amber pullbtn">Download ↓</span></div>' +
+        '<div class="foot">' +
+          (series
+            ? '<span class="badge seasoncount">' + n + ' season' + (n === 1 ? '' : 's') + '</span>'
+            : '') +
+          '<span class="btn btn--amber pullbtn">' +
+            (series ? 'Episodes →' : 'Download ↓') + '</span>' +
+        '</div>' +
       '</div>';
 
     // A broken cover must not leave a blank black frame.
-    var img = card.getElementsByTagName('img')[0];
+    var img = card.querySelector('img');
     if (img) {
       img.onerror = function () {
-        var frame = card.getElementsByTagName('div')[0];
-        frame.innerHTML = '<div class="noart"><i>no artwork</i></div>';
+        card.querySelector('.frame').innerHTML =
+          '<div class="noart"><i>no artwork</i></div>' +
+          (series ? '<div class="play">≡</div>' : '');
       };
     }
 
-    var label = card.getElementsByTagName('span')[0];
-    card.__activate = function () { pull(f, label); };
+    var label = card.querySelector('.pullbtn');
+    card.__activate = series
+      ? function () { openSeries(f); }
+      : function () { pull(f, label); };
     card.onclick = card.__activate;    // Magic Remote pointer still works
     return card;
   }
 
   function pull(film, label) {
     label.innerHTML = 'Downloading…';
-    request('POST', API + '/api/download', {
-      title: val(film.title, ''),
-      cover: val(film.cover, null),
-      slug:  val(film.slug, null),
-      id:    film.id
-    }, 20000, function (ok, data) {
+    request('POST', API + '/api/download', filmPayload(film), 20000, function (ok, data, status) {
       if (data) { log(JSON.stringify(data, null, 2)); }
       label.innerHTML = ok ? 'On the shelf ✓' : 'Couldn\'t pull';
       if (!ok) {
-        findStatus.innerHTML = 'The download didn\'t start. Check the connection.';
+        findStatus.innerHTML = 'The download didn\'t start (' + status + '). ' +
+          'Check the connection, or press 0 for the log.';
       }
     });
+  }
+
+  /* ============================== THE SERIES REEL ==========================
+     Opened from a search hit whose type is "tv". Season 1 is loaded on open;
+     the pills switch seasons. An episode can be pulled on its own, or the
+     whole season handed to /api/download_season in one press.
+
+     Structurally this mirrors the desktop season sheet, but it is a layer of
+     its own rather than a mode of the action sheet above -- see the comment on
+     #series-layer in the markup for why the 640px sheet could not hold it.
+
+     Two engine notes, both the reason this is not a copy of index.html's
+     version: there is no Map for the season cache (plain objects with a
+     prefixed key instead), and no scroll-snap or smooth scrolling on the rail,
+     which is no loss because focus, not a scroll position, is what moves here.
+     ====================================================================== */
+
+  function openSeries(f) {
+    lastFocusBeforeSeries = document.activeElement;
+    seriesFilm   = f;
+    seriesCache  = {};
+    seriesQueued = {};
+    seasonQueued = {};
+    seriesOpen   = true;
+    stopPolling();
+
+    seriesTitle.innerHTML  = esc(val(f.title, 'Untitled'));
+    seriesStatus.innerHTML = '—';
+    epTrack.innerHTML      = '';
+    buildSeasonPills(seasonCount(f));
+    seriesLayer.className = 'open';
+    pushLevel('series');              // gives the Back key an entry to consume
+
+    showSeason(1);
+    // The strip is where the reel is steered from, so it takes focus first:
+    // RIGHT walks the seasons, DOWN drops into the episodes.
+    var first = seasonPills.getElementsByTagName('button')[0];
+    setFocus(first || seriesClose);
+  }
+
+  /* Only popstate calls this, exactly as with the sheet and the player: the
+     layer and its history entry go away together or not at all. */
+  function tearDownSeries() {
+    if (!seriesOpen) { return; }
+    seriesOpen = false;
+    seriesRun++;                      // abandon any season fetch still in flight
+    seriesLayer.className = '';
+    // Drop the stills rather than leaving a season's worth of decoded covers
+    // resident behind a layer nobody is looking at.
+    epTrack.innerHTML = '';
+    seasonPills.innerHTML = '';
+    seriesFilm = null;
+    seriesCache = {};
+    if (lastFocusBeforeSeries) { setFocus(lastFocusBeforeSeries); }
+  }
+
+  /* ------------------------------ SEASONS -------------------------------- */
+
+  function buildSeasonPills(n) {
+    seasonPills.innerHTML = '';
+    seasonPills.scrollLeft = 0;
+    for (var s = 1; s <= n; s++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'season';
+      b.setAttribute('data-nav', '1');
+      b.setAttribute('data-season', String(s));
+      b.innerHTML = 'S' + pad2(s);
+      b.__activate = seasonRunner(s);
+      b.onclick = b.__activate;
+      seasonPills.appendChild(b);
+    }
+  }
+
+  /* A named factory, not a closure written inline in the loop above: `var` has
+     no block scope, so an inline handler would capture the variable rather
+     than the value and every pill would open the last season. */
+  function seasonRunner(s) {
+    return function () { showSeason(s); };
+  }
+
+  /* className is rewritten wholesale here, so the focus ring -- which lives in
+     a class, not just :focus, because some webOS builds drop :focus styling on
+     non-form elements -- has to be carried across by hand. Same in
+     syncSeasonButton below. */
+  function markSeasonPill(s) {
+    var pills = seasonPills.getElementsByTagName('button');
+    for (var i = 0; i < pills.length; i++) {
+      var on = (Number(pills[i].getAttribute('data-season')) === s);
+      var keep = (pills[i].className.indexOf('focused') >= 0) ? ' focused' : '';
+      pills[i].className = 'season' + (on ? ' on' : '') + keep;
+    }
+  }
+
+  function syncSeasonButton() {
+    var done = !!seasonQueued['s' + seriesSeason];
+    var keep = (seasonAll.className.indexOf('focused') >= 0) ? ' focused' : '';
+    seasonAll.innerHTML = done
+      ? 'Season ' + seriesSeason + ' queued ✓'
+      : 'Download season ' + seriesSeason + ' ↓';
+    seasonAll.className = (done ? 'btn btn--ghost' : 'btn btn--amber') + keep;
+  }
+
+  function showSeason(s) {
+    seriesSeason = s;
+    var run = ++seriesRun;
+    markSeasonPill(s);
+    syncSeasonButton();
+
+    var cached = seriesCache['s' + s];
+    if (cached) { renderEpisodes(cached); return; }
+
+    epTrack.innerHTML = '';
+    syncRailNav();
+    seriesStatus.innerHTML = 'Reading the reel for <b>season ' + s + '</b>…';
+
+    request('POST', API + '/api/episodes?season=' + encodeURIComponent(s),
+      filmPayload(seriesFilm), 30000, function (ok, data, status) {
+        // A newer season won the race, or the layer closed under the request.
+        if (run !== seriesRun || !seriesOpen) { return; }
+        if (data) { log(JSON.stringify(data, null, 2)); }
+        if (!ok || !(data instanceof Array)) {
+          var why = detailOf(data);
+          seriesStatus.innerHTML = why
+            ? 'Season ' + s + ' didn\'t load: ' + esc(why)
+            : 'Season ' + s + ' didn\'t load (' + status + ') — press 0 for the log.';
+          return;
+        }
+        seriesCache['s' + s] = data;
+        renderEpisodes(data);
+      });
+  }
+
+  /* ------------------------------ EPISODES ------------------------------- */
+
+  function renderEpisodes(eps) {
+    epTrack.innerHTML = '';
+    epTrack.scrollLeft = 0;
+
+    if (!eps.length) {
+      seriesStatus.innerHTML = 'Season ' + seriesSeason + ' came back empty.';
+      syncRailNav();
+      return;
+    }
+
+    seriesStatus.innerHTML = '<b>' + eps.length + '</b> episode' +
+      (eps.length === 1 ? '' : 's') + ' in season ' + seriesSeason +
+      '. Press OK on one to pull it down.';
+
+    for (var i = 0; i < eps.length; i++) {
+      epTrack.appendChild(episodeCard(eps[i], i));
+    }
+    // The last card drops its right margin, or the reel scrolls to a gap.
+    var cards = epTrack.getElementsByTagName('article');
+    if (cards.length) { cards[cards.length - 1].className += ' endrail'; }
+    syncRailNav();
+  }
+
+  function episodeCard(ep, i) {
+    var title  = val(ep.title, 'Untitled');
+    var cover  = ep.cover ? (IMG_BASE + ep.cover) : '';
+    var queued = !!seriesQueued['e' + ep.id];
+    var epno   = '<span class="epno">E' + pad2(i + 1) + '</span>';
+    var card   = document.createElement('article');
+
+    card.className = 'epcard';
+    card.setAttribute('data-nav', '1');
+    card.setAttribute('tabindex', '0');
+    card.innerHTML =
+      '<div class="frame">' +
+        (cover
+          ? '<img src="' + esc(cover) + '" alt="" />'
+          : '<div class="noart"><i>no artwork</i></div>') +
+        epno +
+      '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + esc(title) + '</div>' +
+        '<div class="foot"><span class="btn btn--amber pullbtn">' +
+          (queued ? 'Queued ✓' : 'Download ↓') + '</span></div>' +
+      '</div>';
+
+    var img = card.querySelector('img');
+    if (img) {
+      img.onerror = function () {
+        card.querySelector('.frame').innerHTML =
+          '<div class="noart"><i>no artwork</i></div>' + epno;
+      };
+    }
+
+    card.__activate = function () { pullEpisode(ep, card); };
+    card.onclick = card.__activate;
+    return card;
+  }
+
+  function pullEpisode(ep, card) {
+    if (seriesQueued['e' + ep.id]) { return; }      // already on its way
+    var label = card.querySelector('.pullbtn');
+    label.innerHTML = 'Pulling…';
+
+    request('POST', API + '/api/download', filmPayload(ep), 30000,
+      function (ok, data, status) {
+        if (data) { log(JSON.stringify(data, null, 2)); }
+        if (ok) {
+          seriesQueued['e' + ep.id] = true;
+          label.innerHTML = 'Queued ✓';
+          return;
+        }
+        // Left enabled on purpose: a failed queue is worth another press.
+        label.innerHTML = 'Couldn\'t pull';
+        var why = detailOf(data);
+        seriesStatus.innerHTML = why
+          ? 'That episode didn\'t start: ' + esc(why)
+          : 'That episode didn\'t start (' + status + '). Press OK to try again.';
+      });
+  }
+
+  function pullSeason() {
+    var s = seriesSeason;
+    var film = seriesFilm;
+    if (seasonQueued['s' + s]) { return; }
+
+    seasonAll.innerHTML = 'Queueing season ' + s + '…';
+    /* 60s, and deliberately not the 20-30s the rest of this file uses: the
+       handler re-reads the whole season from the catalog before it answers,
+       so a short timeout would abandon a request that is going to succeed and
+       queue every episode anyway -- leaving the TV saying it failed while the
+       downloads run. */
+    request('POST', API + '/api/download_season?season=' + encodeURIComponent(s),
+      filmPayload(film), 60000, function (ok, data, status) {
+        if (data) { log(JSON.stringify(data, null, 2)); }
+        if (!seriesOpen || seriesFilm !== film) { return; }   // closed mid-flight
+        if (!ok) {
+          if (seriesSeason === s) {
+            seasonAll.innerHTML = 'Couldn\'t queue season ' + s;
+            var why = detailOf(data);
+            seriesStatus.innerHTML = why
+              ? 'The season didn\'t start: ' + esc(why)
+              : 'The season didn\'t start (' + status + '). Press OK to try again.';
+          }
+          return;
+        }
+        seasonQueued['s' + s] = true;
+        // Every episode of that season is on its way now -- say so on each card.
+        var eps = seriesCache['s' + s] || [];
+        for (var i = 0; i < eps.length; i++) { seriesQueued['e' + eps[i].id] = true; }
+        // Only redraw if that season is still the one on screen; the user may
+        // have moved on while the catalog was being read.
+        if (seriesSeason === s) {
+          syncSeasonButton();
+          renderEpisodes(eps);
+        }
+      });
+  }
+
+  /* -------------------------------- THE RAIL ------------------------------ */
+
+  function railStep() {
+    var w = epTrack.clientWidth;
+    return w > 240 ? Math.floor(w * 0.82) : 240;   // just under a screenful
+  }
+
+  /* Pointer only -- the D-pad scrolls the rail by moving focus, via
+     ensureVisibleH. An instant jump, because scroll-behavior:smooth needs
+     Chromium 61 and a hand-rolled tween would pan a 1280px panel worse than
+     not animating at all. */
+  function scrollRail(dir) {
+    epTrack.scrollLeft += dir * railStep();
+    syncRailNav();
+  }
+
+  function syncRailNav() {
+    var max = epTrack.scrollWidth - epTrack.clientWidth;
+    var x = epTrack.scrollLeft;
+    // 4px of slack: sub-pixel widths mean scrollLeft never lands exactly on max.
+    var atStart = x <= 4;
+    var atEnd = (max <= 0) || x >= max - 4;
+    railPrev.className = 'railnav prev' + (atStart ? ' gone' : '');
+    railNext.className = 'railnav next' + (atEnd ? ' gone' : '');
+    // The edge fades only earn their keep where there is more reel to reveal.
+    eprail.className = 'eprail' + (atStart ? ' atstart' : '') + (atEnd ? ' atend' : '');
   }
 
   /* ================================ SHELF ================================ */
@@ -647,7 +1261,7 @@
 
   function schedulePoll(films) {
     stopPolling();
-    if (view !== 'shelf' || playerOpen || modalOpen) { return; }
+    if (view !== 'shelf' || playerOpen || modalOpen || seriesOpen) { return; }
     var busy = false;
     for (var i = 0; i < films.length; i++) {
       if (statusOf(films[i]) === 'downloading') { busy = true; break; }
@@ -658,13 +1272,94 @@
 
   /* ================================ PLAYER =============================== */
 
+  /* h:mm:ss past the hour, m:ss below it -- a 42-minute episode should not be
+     padded out to 0:42:10 just because some films are long. */
+  function clock(s) {
+    if (s === null || s === undefined || isNaN(s) || s < 0) { return '--:--'; }
+    s = Math.floor(s);
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    if (h > 0) { return h + ':' + pad2(m) + ':' + pad2(sec); }
+    return m + ':' + pad2(sec);
+  }
+
+  /* Repaints the bar from the video's own state. Called on timeupdate, on a
+     seek and on play/pause -- never on a timer, so a paused film costs nothing.
+
+     Guarded on the whole-percent value the same way the backend's download
+     progress hook is: timeupdate fires about four times a second, and moving
+     three boxes for a sub-pixel change is work a 1.2 GHz TV SoC should not be
+     doing behind a decoding video. */
+  var lastPct = -1;
+  function paintPlayer(force) {
+    var d = video.duration;
+    var t = shownTime();          // the preview position while scrubbing
+    var vt = video.currentTime;   // where the video actually is
+    playerNow.innerHTML = clock(t);
+
+    if (!d || isNaN(d) || d <= 0) {
+      playerDur.innerHTML = '--:--';
+      playerFill.style.width = '0%';
+      playerKnob.style.left = '0%';
+      return;
+    }
+    playerDur.innerHTML = clock(d);
+
+    var pct = Math.max(0, Math.min(100, (t / d) * 100));
+    var whole = Math.round(pct * 10);          // tenths, so the knob still glides
+    if (!force && whole === lastPct) { return; }
+    lastPct = whole;
+    playerFill.style.width = pct + '%';
+    playerKnob.style.left = pct + '%';
+
+    /* Buffered is a range list, and after a seek the range under the playhead
+       is not necessarily range 0 -- so find the one containing the playhead
+       rather than assuming. */
+    try {
+      var br = video.buffered, i;
+      for (i = 0; i < br.length; i++) {
+        // Keyed on the real position, not the preview: the scrub target is
+        // usually somewhere nothing has been buffered yet.
+        if (br.start(i) <= vt && vt <= br.end(i)) {
+          playerBuf.style.width = Math.min(100, (br.end(i) / d) * 100) + '%';
+          break;
+        }
+      }
+    } catch (e) { /* buffered throws on some engines before metadata */ }
+  }
+
+  /* The strip is up while something is happening and gets out of the way when
+     nothing is. A bar parked over a two-hour film is an OLED burn-in risk, and
+     it covers the picture besides. */
+  function showPlayerUI(scrubbing) {
+    playerUI.className = scrubbing ? 'scrubbing' : '';
+    if (playerUITimer) { clearTimeout(playerUITimer); }
+    playerUITimer = setTimeout(function () {
+      if (!playerOpen || scrubbing) { return; }
+      // Never hide while paused: a paused film with no bar looks like a hang.
+      playerUI.className = video.paused ? '' : 'hidden';
+    }, PLAYER_UI_MS);
+  }
+
   function openPlayer(f) {
     lastFocusBeforePlayer = document.activeElement;
     stopPolling();
     playerOpen = true;
     playerTitle.innerHTML = esc(val(f.title, ''));
+
+    // Reset the bar before the new source loads, or the previous film's
+    // duration and fill sit there until the first timeupdate arrives.
+    lastPct = -1;
+    playerNow.innerHTML = '0:00';
+    playerDur.innerHTML = '--:--';
+    playerFill.style.width = '0%';
+    playerBuf.style.width = '0%';
+    playerKnob.style.left = '0%';
+
     video.src = '/movies/' + encodeURIComponent(f.path);
     playerLayer.className = 'open';
+    showPlayerUI();
     try { video.play(); } catch (e) {}
     try { video.focus(); } catch (e) {}
   }
@@ -673,6 +1368,10 @@
      back, so the entry and the layer disappear together. */
   function tearDownPlayer() {
     playerOpen = false;
+    cancelScrub();              // a pending commit must not seek a torn-down video
+    if (playerUITimer) { clearTimeout(playerUITimer); playerUITimer = null; }
+    playerUI.className = '';
+    lastPct = -1;
     try { video.pause(); } catch (e) {}
     video.removeAttribute('src');
     // Without an explicit load() the decoder keeps the old stream open and the
@@ -686,14 +1385,127 @@
   function togglePlay() {
     if (video.paused) { try { video.play(); } catch (e) {} }
     else { try { video.pause(); } catch (e) {} }
+    showPlayerUI();
+    paintPlayer(true);
   }
 
-  function seek(delta) {
-    var t = video.currentTime + delta;
-    if (t < 0) { t = 0; }
-    if (video.duration && t > video.duration) { t = video.duration; }
-    try { video.currentTime = t; } catch (e) {}
+  /* ------------------------------- SCRUBBING ------------------------------
+     A press moves a PREVIEW playhead along the bar and restarts a short commit
+     timer; the video is seeked once, when the remote goes quiet.
+
+     Seeking on every press is what made a held D-pad useless. webOS
+     auto-repeats keydown while a key is down, so holding ◀ fired a seek per
+     repeat and the decoder spent the whole time tearing down and re-opening the
+     stream rather than moving through it -- the picture froze and the position
+     crawled. Deferring the seek means holding the key slides the playhead
+     smoothly at zero cost, and exactly one seek is issued when you stop.
+
+     It also accelerates. A fixed ten-second step cannot cross a two-hour film:
+     that is 700-odd presses. The ladder grows the step the longer you hold, and
+     drops back to ten seconds as soon as you pause, so both "jump to the middle"
+     and "back up four seconds, I missed that line" are one gesture.
+     ====================================================================== */
+
+  /* What the bar draws: the preview target while scrubbing, the video's real
+     position otherwise. */
+  function shownTime() {
+    return scrubbing ? scrubTarget : video.currentTime;
   }
+
+  function scrubStep() {
+    var i = Math.floor(scrubRuns / 4);
+    if (i > SCRUB_STEPS.length - 1) { i = SCRUB_STEPS.length - 1; }
+    return SCRUB_STEPS[i];
+  }
+
+  function nudgeScrub(dir) {
+    var d = video.duration;
+    // Before metadata there is no timeline to move along, and assigning
+    // currentTime throws on some engines.
+    if (!d || isNaN(d) || d <= 0) { showPlayerUI(false); return; }
+
+    var now = (new Date()).getTime();
+    if (!scrubbing) {
+      scrubbing = true;
+      scrubTarget = video.currentTime;
+      scrubRuns = 0;
+    } else if (now - scrubLastAt > SCRUB_ACCEL_MS) {
+      scrubRuns = 0;                    // a pause between presses means fine steps again
+    } else {
+      scrubRuns++;
+    }
+    scrubLastAt = now;
+
+    scrubTarget += dir * scrubStep();
+    if (scrubTarget < 0) { scrubTarget = 0; }
+    // Stop a hair short of the end: landing exactly on duration fires `ended`
+    // on some engines and tears the picture down mid-scrub.
+    if (scrubTarget > d - 0.5) { scrubTarget = d - 0.5; }
+
+    playerUI.className = 'scrubbing';
+    paintPlayer(true);
+    playerHint.innerHTML = scrubLabel();
+
+    if (scrubTimer) { clearTimeout(scrubTimer); }
+    scrubTimer = setTimeout(commitScrub, SCRUB_COMMIT_MS);
+  }
+
+  /* How far the jump will be, so the number on screen answers "how far back am
+     I going?" rather than only "where will I land?". */
+  function scrubLabel() {
+    var delta = Math.round(scrubTarget - video.currentTime);
+    var sign = delta < 0 ? '−' : '+';
+    if (delta < 0) { delta = -delta; }
+    return 'Scrubbing ' + sign + clock(delta) + ' · OK to jump here';
+  }
+
+  function commitScrub() {
+    if (scrubTimer) { clearTimeout(scrubTimer); scrubTimer = null; }
+    if (!scrubbing) { return; }
+    var t = scrubTarget;
+    scrubbing = false;
+    scrubRuns = 0;
+    try { video.currentTime = t; } catch (e) {}
+    playerHint.innerHTML = HINT;
+    showPlayerUI(false);
+    paintPlayer(true);
+  }
+
+  function cancelScrub() {
+    if (scrubTimer) { clearTimeout(scrubTimer); scrubTimer = null; }
+    scrubbing = false;
+    scrubRuns = 0;
+    playerHint.innerHTML = HINT;
+  }
+
+  /* The three events that can move the playhead without the remote: normal
+     playback, metadata arriving with the real duration, and the engine
+     settling after a seek. No polling timer -- a paused film costs nothing. */
+  /* Magic Remote pointer: a click anywhere on the track jumps there. The D-pad
+     has no equivalent -- it walks the timeline with ◀ ▶ instead -- so this is
+     purely for the pointer, like the rail arrows. */
+  playerTrack.onclick = function (e) {
+    var d = video.duration;
+    if (!d || isNaN(d) || d <= 0) { return; }
+    var r = playerTrack.getBoundingClientRect();
+    if (!r.width) { return; }
+    var x = (e.clientX - r.left) / r.width;
+    if (x < 0) { x = 0; }
+    if (x > 1) { x = 1; }
+    scrubbing = true;
+    scrubTarget = Math.min(x * d, d - 0.5);
+    commitScrub();
+  };
+
+  video.addEventListener('timeupdate', function () { paintPlayer(false); }, false);
+  video.addEventListener('loadedmetadata', function () { paintPlayer(true); showPlayerUI(); }, false);
+  video.addEventListener('seeked', function () { paintPlayer(true); }, false);
+  video.addEventListener('progress', function () { paintPlayer(true); }, false);
+  // A film that runs out should show its bar again rather than sit on a still.
+  video.addEventListener('ended', function () {
+    playerUI.className = '';
+    if (playerUITimer) { clearTimeout(playerUITimer); playerUITimer = null; }
+  }, false);
 
   /* ============================= ACTION SHEET =============================
      The desktop card grew two icon buttons in its foot: send-to-phone and
@@ -938,15 +1750,37 @@
 
     if (playerOpen) {
       if (code === K_OK || code === K_PLAY || code === K_PAUSE) {
-        e.preventDefault(); togglePlay(); return;
+        e.preventDefault();
+        // Mid-scrub, OK lands the jump rather than pausing: waiting out the
+        // commit timer to confirm a position you have already chosen is a
+        // needless half second.
+        if (scrubbing) { commitScrub(); return; }
+        togglePlay(); return;
       }
-      if (code === K_LEFT)  { e.preventDefault(); seek(-SEEK_S); return; }
-      if (code === K_RIGHT) { e.preventDefault(); seek(SEEK_S);  return; }
+      if (code === K_LEFT)  { e.preventDefault(); nudgeScrub(-1); return; }
+      if (code === K_RIGHT) { e.preventDefault(); nudgeScrub(1);  return; }
+      /* Any other press wakes the strip without doing anything else. UP/DOWN
+         have nothing to move to in here, so this is what they are for: a look
+         at where you are in the film without disturbing playback. */
+      showPlayerUI();
       return;
     }
 
     // The sheet is modal: the arrows must never reach the shelf behind it.
     if (modalOpen) {
+      if (code === K_OK)    { e.preventDefault(); activate();    return; }
+      if (code === K_UP)    { e.preventDefault(); move('up');    return; }
+      if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
+      if (code === K_LEFT)  { e.preventDefault(); move('left');  return; }
+      if (code === K_RIGHT) { e.preventDefault(); move('right'); return; }
+      return;
+    }
+
+    /* The series layer is modal in the same sense: the arrows must not reach
+       the search grid behind it. The booth log is deliberately not toggleable
+       from here -- it renders inside #scroll, which this layer covers -- so a
+       failed season reports its HTTP status on the status line instead. */
+    if (seriesOpen) {
       if (code === K_OK)    { e.preventDefault(); activate();    return; }
       if (code === K_UP)    { e.preventDefault(); move('up');    return; }
       if (code === K_DOWN)  { e.preventDefault(); move('down');  return; }
@@ -995,6 +1829,17 @@
   tabShelf.onclick    = tabShelf.__activate;
   searchBtn.__activate = doSearch;
   searchBtn.onclick    = doSearch;
+
+  /* Close walks the history rather than tearing the layer down directly, so
+     the entry pushed for it is consumed either way and Back and Close cannot
+     leave the stack at different depths. */
+  seriesClose.__activate = goBack;
+  seriesClose.onclick    = seriesClose.__activate;
+  seasonAll.__activate   = pullSeason;
+  seasonAll.onclick      = seasonAll.__activate;
+  // Pointer affordances; the D-pad never lands on these.
+  railPrev.onclick = function () { scrollRail(-1); };
+  railNext.onclick = function () { scrollRail(1); };
 
   // Cover host for search hits rotates, so it is read from the backend.
   request('GET', API + '/api/config', null, 8000, function (ok, data) {

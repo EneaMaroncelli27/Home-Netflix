@@ -56,7 +56,6 @@ class FilmIn(BaseModel):
 def home():
     return FileResponse(ONLINE_FRONTEND if check_connection() else OFFLINE_FRONTEND)
 
-
 @app.post("/api/search")
 def search(title: str):
     if not title:
