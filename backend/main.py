@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from backend.scripts.utlis import check_connection
@@ -15,7 +16,6 @@ from backend.scripts.search import search_by_title, get_episodes
 from backend.scripts.download import download_film
 from backend.scripts.urlgetter import URL, COVER_URL
 from backend.db import list_films, delete_film_db, get_path, get_cover, get_status
-import asyncio
 import shutil
 import qrcode
 import urllib.parse
@@ -23,6 +23,8 @@ import base64
 import io
 import re
 import uuid
+
+DEBUG = os.getenv("DEBUG", "false").strip().lower() in ("1", "true", "yes", "on")
 
 app = FastAPI()
 
@@ -84,7 +86,7 @@ async def download_s(film: FilmIn, season : int, background_tasks : BackgroundTa
 
 @app.get('/api/config')
 def config():
-    return {"url": URL, "cover_base": COVER_URL}
+    return {"url": URL, "cover_base": COVER_URL, "debug": DEBUG}
 
 @app.get('/api/films')
 def get_film():

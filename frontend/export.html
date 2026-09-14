@@ -74,6 +74,12 @@
   <script>
     const API = location.origin.startsWith("http") ? location.origin : "http://localhost:8000";
 
+    // The booth log stays hidden unless the backend was started with DEBUG=true.
+    fetch(`${API}/api/config`)
+      .then((r) => r.json())
+      .then((c) => { if (c.debug) { document.body.classList.add("debug"); } })
+      .catch(() => {});
+
     const statusEl  = document.getElementById("status");
     const results   = document.getElementById("results");
     const raw       = document.getElementById("raw");

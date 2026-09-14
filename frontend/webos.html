@@ -177,6 +177,7 @@
   if (!API || API.indexOf('http') !== 0) { API = 'http://localhost:8000'; }
 
   var IMG_BASE = '';          // cover host for SEARCH hits; filled from /api/config
+  var DEBUG    = false;       // DEBUG=true in the environment; filled from /api/config
   var POLL_MS  = 2000;        // shelf refresh while something is downloading
 
   /* Scrubbing. The ladder is what makes a long film crossable: keep the D-pad
@@ -1801,7 +1802,8 @@
 
     if (code === K_ZERO || code === K_RED) {         // reveal the booth log
       e.preventDefault();
-      booth.className = booth.className ? '' : 'open';
+      // Dead key unless the backend was started with DEBUG=true.
+      if (DEBUG) { booth.className = booth.className ? '' : 'open'; }
       return;
     }
   }, false);
@@ -1843,7 +1845,12 @@
 
   // Cover host for search hits rotates, so it is read from the backend.
   request('GET', API + '/api/config', null, 8000, function (ok, data) {
-    if (ok && data) { IMG_BASE = val(data.cover_base, ''); }
+    if (ok && data) {
+      IMG_BASE = val(data.cover_base, '');
+      DEBUG    = !!data.debug;
+      // The log may already be on screen from a press that raced this answer.
+      if (!DEBUG) { booth.className = ''; }
+    }
   });
 
   // Prime the shelf count in the header without leaving the search view.

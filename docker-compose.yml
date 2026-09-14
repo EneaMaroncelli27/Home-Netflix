@@ -5,6 +5,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Booth log in the frontends. `DEBUG=true docker compose up` turns it on
+      # for one run; set DEBUG in .env to make it stick.
+      - DEBUG=${DEBUG:-false}
     volumes:
       - ./Movies:/app/Movies
       - ./Covers:/app/Covers

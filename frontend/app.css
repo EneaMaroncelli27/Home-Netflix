@@ -277,8 +277,11 @@ body{
   text-overflow:ellipsis;white-space:nowrap;}
 .hereinfo b{color:var(--screen);font-weight:400;}
 
-/* ---- Booth log (debug details) ---- */
-.booth{margin-top:46px;}
+/* ---- Booth log (debug details) ----
+   Off unless the backend reports DEBUG=true; the boot-time /api/config call
+   puts .debug on <body>, which is the only thing that reveals it. */
+.booth{display:none;margin-top:46px;}
+body.debug .booth{display:block;}
 .booth summary{font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;
   color:var(--faint);cursor:pointer;list-style:none;}
 .booth summary::before{content:"▸ ";color:var(--bulb);}

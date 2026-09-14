@@ -17,8 +17,6 @@ import asyncio
 import threading
 
 DEFAULT_URL = ""
-# Matches a streamingcommunity domain with or without scheme/path, e.g.
-#   "streamingcommunityz.us", "https://streamingcommunityz.tech/it"
 _URL_RE = re.compile(r"(?:https?://)?(streamingcommunity[\w-]*\.[a-z]{2,})", re.I)
 
 
@@ -37,7 +35,9 @@ async def _fetch_latest_url(limit: int = 40) -> str | None:
             text = msg.message or ""
             m = _URL_RE.search(text)
             if m:
-                return "https://" + m.group(1).lower().rstrip("/")
+                url = "https://" + m.group(1).lower().rstrip("/")
+                print(f"[*] LAST URL FETCHED {url}")
+                return url
     return None
 
 
@@ -96,3 +96,4 @@ def refresh() -> str:
     URL = get_new_url()
     COVER_URL = _cover_url(URL)
     return URL
+

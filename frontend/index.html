@@ -77,7 +77,11 @@
     let IMG_BASE = "";
     fetch(`${API}/api/config`)
       .then((r) => r.json())
-      .then((c) => { IMG_BASE = c.cover_base || ""; })
+      .then((c) => {
+        IMG_BASE = c.cover_base || "";
+        // DEBUG=true in the environment is what unhides the booth log.
+        if (c.debug) { document.body.classList.add("debug"); }
+      })
       .catch(() => {});
 
     const q = document.getElementById("q");
