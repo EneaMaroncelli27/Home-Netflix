@@ -1149,7 +1149,33 @@
     return String(val(f.status, '')).toLowerCase();
   }
 
-  function renderShelf(films) {
+  /* Episodes carry the id "<seriesId>-<episodeId>", so everything from one series
+     shares a prefix. Films get an empty key and stay at the front, in arrival
+     order. Sorting here keeps a series' episodes together and in broadcast order
+     instead of scattered through the shelf by download time. */
+  function seriesKey(f) {
+    return String(val(f.type, '')) === 'episode' ? String(f.id).split('-')[0] : '';
+  }
+
+  function epSuffix(f) {
+    return Number(String(f.id).split('-')[1]) || 0;
+  }
+
+  function groupBySeries(films) {
+    return films.slice().sort(function (a, b) {
+      var ka = seriesKey(a), kb = seriesKey(b);
+      if (ka !== kb) { return ka < kb ? -1 : 1; }
+      if (!ka) { return 0; }
+      // Rows stored before the series columns existed have no season or episode
+      // number, so fall back to the episode id for those.
+      return (Number(val(a.season, 0)) - Number(val(b.season, 0))) ||
+             (Number(val(a.episode_n, 0)) - Number(val(b.episode_n, 0))) ||
+             (epSuffix(a) - epSuffix(b));
+    });
+  }
+
+  function renderShelf(unsorted) {
+    var films = groupBySeries(unsorted);
     var ready = 0, i;
     for (i = 0; i < films.length; i++) {
       if (statusOf(films[i]) === 'completed') { ready++; }
@@ -1192,6 +1218,9 @@
     var playable = (status === 'completed' && !!f.path);
     var pct      = Math.max(0, Math.min(100, Math.round(Number(val(f.progress, 0)) || 0)));
     var title    = val(f.title, 'Untitled');
+    var series   = f.series_title ? String(f.series_title) : '';
+    // Older episode rows have no season number — they just show their own title.
+    var epTag    = Number(val(f.season, 0)) ? ('S' + f.season + 'E' + f.episode_n + ' · ') : '';
     var cover    = f.cover ? ('/covers/' + encodeURIComponent(f.cover)) : '';
 
     var label;
@@ -1213,7 +1242,10 @@
         (playable ? '<div class="play">▶</div>' : '') +
       '</div>' +
       '<div class="info">' +
-        '<div class="name">' + esc(title) + '</div>' +
+        /* Always emitted, empty for a film: the cards are inline-blocks, so a
+           line that appears on some of them alone would stagger the rows. */
+        '<div class="series">' + esc(series) + '</div>' +
+        '<div class="name">' + esc(epTag) + esc(title) + '</div>' +
         '<div class="foot"><span class="badge ' + esc(status) + '">' + esc(label) + '</span></div>' +
         (status === 'downloading'
           ? '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'

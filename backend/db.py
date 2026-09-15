@@ -21,12 +21,20 @@ with get_conn() as conn:
                 cover VARCHAR(255),
                 status VARCHAR(255) NOT NULL,
                 season_count INTEGER NOT NULL DEFAULT 0,
-                progress INTEGER NOT NULL DEFAULT 0
+                progress INTEGER NOT NULL DEFAULT 0,
+                series_title VARCHAR(255),
+                season INTEGER NOT NULL DEFAULT 0,
+                episode_n INTEGER NOT NULL DEFAULT 0
                );""")
-    # Migrate older tables that predate the progress column.
+    # Migrate older tables that predate a column. Episodes stored before the
+    # series columns existed keep NULL/0 and fall back to their own title.
     cols = [c[1] for c in conn.execute("PRAGMA table_info(films)").fetchall()]
     if "progress" not in cols:
         conn.execute("ALTER TABLE films ADD COLUMN progress INTEGER NOT NULL DEFAULT 0")
+    if "series_title" not in cols:
+        conn.execute("ALTER TABLE films ADD COLUMN series_title VARCHAR(255)")
+        conn.execute("ALTER TABLE films ADD COLUMN season INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE films ADD COLUMN episode_n INTEGER NOT NULL DEFAULT 0")
 
 def check_already_exists(id):
     query = "SELECT 1 FROM films WHERE id = ?"
@@ -43,9 +51,11 @@ def add_film(film : Film):
     path = stem + '.mp4'
     cover = stem + '.webp'
     status = "downloading"
-    query = "INSERT INTO FILMS (id, title, type, path, cover, status, season_count, progress) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    query = "INSERT INTO FILMS (id, title, type, path, cover, status, season_count, progress, series_title, season, episode_n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     with get_conn() as conn:
-        conn.execute(query, (film.id, film.title, film.type, path, cover, status, film.season_c, 0))
+        conn.execute(query, (film.id, film.title, film.type, path, cover, status, film.season_c, 0,
+                             getattr(film, "series_title", None), getattr(film, "season", 0) or 0,
+                             getattr(film, "episode_n", 0) or 0))
     return "ok"
 def get_status(id):
     query = "SELECT status FROM films WHERE id = ?"
@@ -69,12 +79,13 @@ def delete_film_db(id):
         conn.execute(query,(id,))
 
 def list_films():
-    query = "SELECT * FROM films"
+    # Named columns, not SELECT *: the shelf reads these by position.
+    query = "SELECT id, title, type, path, cover, status, season_count, progress, series_title, season, episode_n FROM films"
     with get_conn() as conn:
         db_entries = conn.execute(query).fetchall()
     films = []
     for f in db_entries:
-        films.append(Stored(f[0],f[1],f[2],f[3],f[4],f[5],f[6],f[7]))
+        films.append(Stored(f[0],f[1],f[2],f[3],f[4],f[5],f[6],f[7],f[8],f[9],f[10]))
     return films
 
 def get_path(id : int):

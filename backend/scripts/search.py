@@ -51,8 +51,9 @@ def get_episodes( film : Film, season : int):
     json_data = json.loads(data['data-page'])
     episodes = json_data["props"]["loadedSeason"]["episodes"]
     episodes_found = []
-    for ep in episodes:
-        episode = Film(ep["name"], find_image_cover(ep["images"]), film.slug, f"{film.id}-{ep['id']}", f'episode', 0)
+    for n, ep in enumerate(episodes, start=1):
+        episode = Film(ep["name"], find_image_cover(ep["images"]), film.slug, f"{film.id}-{ep['id']}", f'episode', 0,
+                       series_title=film.title, season=season, episode_n=n)
         episodes_found.append(episode)
 
     return episodes_found

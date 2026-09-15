@@ -52,6 +52,10 @@ class FilmIn(BaseModel):
     id: str
     type : str
     season_c : int = 0
+    # Episodes carry these back from /api/episodes so the shelf can group them.
+    series_title : str | None = None
+    season : int = 0
+    episode_n : int = 0
 
 
 @app.get("/")

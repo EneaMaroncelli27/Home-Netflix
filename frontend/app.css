@@ -365,6 +365,9 @@ body.debug .booth{display:block;}
   display:flex;align-items:center;gap:16px;flex-wrap:wrap;
   padding:14px 0 0;border-top:1px solid var(--line);
 }
+/* A series with one unnamed season has no choice to offer — the shelf hides
+   the bar, and the flex display above would otherwise outrank [hidden]. */
+.seasonbar[hidden]{display:none;}
 .seasons{display:flex;gap:7px;overflow-x:auto;padding:2px 0 6px;flex:1;min-width:0;
   scrollbar-width:thin;scrollbar-color:var(--line) transparent;}
 .seasons::-webkit-scrollbar{height:5px;}
@@ -428,6 +431,16 @@ body.debug .booth{display:block;}
 }
 .epcard .epget{margin-top:auto;width:100%;justify-content:center;
   font-size:.82rem;padding:9px 12px;}
+
+/* On the shelf the episodes are already downloaded, so their cards carry the
+   film card's actions — watch, send, delete — instead of one download button. */
+.epcard .track{height:3px;border-radius:2px;background:var(--ash);overflow:hidden;}
+.epcard .track .fill{height:100%;background:var(--bulb);box-shadow:0 0 12px var(--glow);
+  transition:width .4s var(--ease);}
+.epcard .badge{align-self:flex-start;}
+.epfoot{display:flex;align-items:center;gap:8px;margin-top:auto;}
+.epfoot .epget{flex:1;width:auto;margin-top:0;}
+.epfoot .tools{display:flex;align-items:center;gap:8px;flex-shrink:0;}
 
 /* ---- Rail arrows ---- */
 .railnav{

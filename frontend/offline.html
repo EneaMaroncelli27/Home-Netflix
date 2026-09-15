@@ -52,6 +52,36 @@
     </div>
   </div>
 
+  <!-- ============================================================
+       THE SERIES SHEET — opens when a series card on the shelf is
+       clicked, the same shape as the season sheet on the search page.
+       Everything it shows comes from /api/films, so it still works
+       with no connection: these episodes are already on disk.
+       ============================================================ -->
+  <div class="modal" id="seriesModal" role="dialog" aria-modal="true" aria-labelledby="ssTitle">
+    <div class="sheet">
+      <div class="head">
+        <div class="headtext">
+          <p class="now">Series</p>
+          <div class="t" id="ssTitle"></div>
+        </div>
+        <button class="btn btn--ghost" id="ssClose" aria-label="Close episode list">Close &#10005;</button>
+      </div>
+
+      <div class="seasonbar" id="ssBar">
+        <div class="seasons" id="ssSeasons" role="tablist" aria-label="Seasons"></div>
+      </div>
+
+      <p class="statusline" id="ssStatus">&#8212;</p>
+
+      <div class="eprail" id="ssRail">
+        <button class="railnav prev" id="ssPrev" type="button" aria-label="Previous episodes">&#8249;</button>
+        <ol class="eptrack" id="ssEps"></ol>
+        <button class="railnav next" id="ssNext" type="button" aria-label="More episodes">&#8250;</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const API = location.origin.startsWith("http") ? location.origin : "http://localhost:8000";
 
@@ -87,33 +117,115 @@
     }
     document.getElementById("modalClose").onclick = closePlayer;
     modal.onclick = (e) => { if (e.target === modal) closePlayer(); };
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePlayer(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      // The player can open on top of the series sheet, so it unwinds first.
+      if (modal.classList.contains("open")) closePlayer();
+      else closeSeries();
+    });
 
     // Signature of which films exist and their status — changes only on a real transition.
     const sig = (films) => films.map((f) => `${f.id}:${(f.status ?? "").toLowerCase()}`).join("|");
     let lastSig = "";
 
     function applyMeta(data) {
-      const ready = data.filter((f) => (f.status ?? "").toLowerCase() === "completed").length;
+      const ready = data.filter(isDone).length;
       shelfChip.classList.toggle("live", data.length > 0);
+      // The chip counts reels — every file on disk. The heading counts what the
+      // grid actually shows, where a whole series is one card.
       shelfCount.textContent = `${data.length} reel${data.length === 1 ? "" : "s"} · ${ready} ready`;
-      statusEl.textContent = `${data.length}`;
+      statusEl.textContent = `${shelfEntries(data).length}`;
+    }
+
+    const isDone = (f) => (f.status ?? "").toLowerCase() === "completed";
+    const isBusy = (f) => (f.status ?? "").toLowerCase() === "downloading";
+    const clampPct = (v) => Math.max(0, Math.min(100, Math.round(v ?? 0)));
+    // Episodes carry the id "<seriesId>-<episodeId>", so everything from one series
+    // shares a prefix. A film has no prefix and stands on its own.
+    const seriesKey = (f) => (f.type === "episode" ? String(f.id).split("-")[0] : "");
+    const epSuffix = (f) => Number(String(f.id).split("-")[1]) || 0;
+
+    // One shelf entry per film and one per SERIES: a series' episodes collapse into
+    // a single card that opens the sheet. Entries keep the order the backend sent,
+    // so a series sits where its first episode landed.
+    function shelfEntries(films) {
+      const entries = [];
+      const bySeries = new Map();
+      films.forEach((f) => {
+        const key = seriesKey(f);
+        if (!key) { entries.push({ kind: "film", id: String(f.id), film: f }); return; }
+        let e = bySeries.get(key);
+        if (!e) {
+          e = { kind: "series", key, id: `s:${key}`, title: "", episodes: [] };
+          bySeries.set(key, e);
+          entries.push(e);
+        }
+        e.episodes.push(f);
+        // Rows saved before the series columns existed carry no title; one row
+        // that has one is enough to name the whole group.
+        if (!e.title && f.series_title) e.title = f.series_title;
+      });
+      bySeries.forEach((e) => {
+        e.title = e.title || `Series ${e.key}`;
+        e.episodes.sort((a, b) =>
+          (a.season - b.season) || (a.episode_n - b.episode_n) || (epSuffix(a) - epSuffix(b)));
+      });
+      return entries;
+    }
+
+    function seriesStats(e) {
+      const busy = e.episodes.filter(isBusy);
+      return {
+        total: e.episodes.length,
+        ready: e.episodes.filter(isDone).length,
+        busy: busy.length,
+        // How far the episodes still running have got, between them.
+        pct: busy.length ? clampPct(busy.reduce((sum, x) => sum + (x.progress ?? 0), 0) / busy.length) : 0,
+      };
+    }
+
+    // Diff key for a card: rebuild only when something the card shows has moved.
+    function entryKey(e) {
+      if (e.kind === "film") return (e.film.status ?? "").toLowerCase();
+      const s = seriesStats(e);
+      return `${s.ready}/${s.total}${s.busy ? ":busy" : ""}`;
+    }
+
+    function setBar(card, pct, label) {
+      const fill = card.querySelector(".track .fill");
+      const track = card.querySelector(".track");
+      const badge = card.querySelector(".badge");
+      if (fill) fill.style.width = pct + "%";
+      if (track) track.setAttribute("aria-valuenow", pct);
+      if (badge) badge.textContent = label;
     }
 
     // Nudge only the bars in place — no DOM rebuild, so the grid never flickers.
     function patchProgress(films) {
-      films.forEach((f) => {
-        if ((f.status ?? "").toLowerCase() !== "downloading") return;
-        const card = results.querySelector(`.film[data-id="${f.id}"]`);
+      shelfEntries(films).forEach((e) => {
+        const card = results.querySelector(`.film[data-id="${e.id}"]`);
         if (!card) return;
-        const pct = Math.max(0, Math.min(100, Math.round(f.progress ?? 0)));
-        const fill = card.querySelector(".track .fill");
-        const track = card.querySelector(".track");
-        const badge = card.querySelector(".badge");
-        if (fill) fill.style.width = pct + "%";
-        if (track) track.setAttribute("aria-valuenow", pct);
-        if (badge) badge.textContent = `Downloading ${pct}%`;
+        if (e.kind === "film") {
+          if (!isBusy(e.film)) return;
+          const pct = clampPct(e.film.progress);
+          setBar(card, pct, `Downloading ${pct}%`);
+        } else {
+          const s = seriesStats(e);
+          if (!s.busy) return;
+          setBar(card, s.pct, `${s.busy} downloading ${s.pct}%`);
+        }
       });
+      // The open sheet gets the same treatment: bars only, so the rail keeps
+      // its scroll position while an episode is coming down.
+      if (ss.entry) {
+        films.forEach((f) => {
+          if (!isBusy(f)) return;
+          const li = ss.eps.querySelector(`.epcard[data-id="${f.id}"]`);
+          if (!li) return;
+          const pct = clampPct(f.progress);
+          setBar(li, pct, `Downloading ${pct}%`);
+        });
+      }
     }
 
     function schedulePoll(data) {
@@ -172,7 +284,7 @@
       // The backend refuses anything mid-download (403), so only offer the
       // button where the delete would actually go through.
       const deletable = status === "completed";
-      const pct = Math.max(0, Math.min(100, Math.round(f.progress ?? 0)));
+      const pct = clampPct(f.progress);
       const label = status === "completed" ? "On shelf" : status === "downloading" ? `Downloading ${pct}%` : (f.status ?? "—");
       const card = document.createElement("article");
       card.className = "film" + (playable ? " playable" : "");
@@ -206,6 +318,189 @@
       return card;
     }
 
+    // A series is one card: the first episode's artwork, the series name, and how
+    // much of it is on disk. Clicking the frame opens the sheet, the same gesture
+    // the search page uses to go from a series to its episodes.
+    function buildSeriesCard(e, i) {
+      const s = seriesStats(e);
+      const art = e.episodes.find((x) => x.cover);
+      const cover = art ? `/covers/${encodeURIComponent(art.cover)}` : "";
+      const label = s.busy ? `${s.busy} downloading ${s.pct}%` : `${s.ready} of ${s.total} on shelf`;
+      const card = document.createElement("article");
+      card.className = "film series";
+      card.dataset.id = e.id;
+      card.dataset.status = entryKey(e);
+      card.style.setProperty("--i", i);
+      card.innerHTML = `
+        <div class="frame${cover ? "" : " empty"}">
+          ${cover
+            ? `<img src="${cover}" alt="${escapeHtml(e.title)} cover" loading="lazy" decoding="async"
+                 onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
+            : `no artwork`}
+          <div class="play"><span>≡</span></div>
+        </div>
+        <div class="info">
+          <div class="name">${escapeHtml(e.title)}</div>
+          <div class="foot">
+            <span class="badge ${s.busy ? "downloading" : "completed"}">${escapeHtml(label)}</span>
+            <span class="tools"><span class="badge">${s.total} ep${s.total === 1 ? "" : "s"}</span></span>
+          </div>
+          ${s.busy
+            ? `<div class="track" role="progressbar" aria-valuenow="${s.pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${s.pct}%"></div></div>`
+            : ""}
+        </div>`;
+      card.querySelector(".frame").onclick = () => openSeries(e);
+      return card;
+    }
+
+    /* ---------- The series sheet ---------- */
+
+    const ss = {
+      el: document.getElementById("seriesModal"),
+      title: document.getElementById("ssTitle"),
+      bar: document.getElementById("ssBar"),
+      seasons: document.getElementById("ssSeasons"),
+      status: document.getElementById("ssStatus"),
+      rail: document.getElementById("ssRail"),
+      eps: document.getElementById("ssEps"),
+      prev: document.getElementById("ssPrev"),
+      next: document.getElementById("ssNext"),
+      entry: null,        // the series on show — null whenever the sheet is shut
+      season: null,
+      seasonOf: null,     // which series `season` belongs to, so it can't leak to another
+    };
+
+    const seasonsOf = (e) =>
+      [...new Set(e.episodes.map((x) => Number(x.season) || 0))].sort((a, b) => a - b);
+
+    // Season 0 is the bucket for rows saved before the season column existed. A
+    // series can hold both, and the named season is the one worth opening on.
+    const defaultSeason = (seasons) => seasons.find((n) => n) ?? seasons[0];
+
+    function openSeries(entry) {
+      ss.entry = entry;
+      const seasons = seasonsOf(entry);
+      // Reopening the same series returns to the season it was left on; a
+      // different series always opens on its own first season.
+      ss.season = (ss.seasonOf === entry.id && seasons.includes(ss.season))
+        ? ss.season
+        : defaultSeason(seasons);
+      ss.seasonOf = entry.id;
+      ss.title.textContent = entry.title;
+      buildSeasonPills(seasons);
+      renderEpisodes();
+      ss.el.classList.add("open");
+    }
+
+    function closeSeries() {
+      ss.entry = null;
+      ss.el.classList.remove("open");
+    }
+    document.getElementById("ssClose").onclick = closeSeries;
+    ss.el.onclick = (ev) => { if (ev.target === ss.el) closeSeries(); };
+
+    function buildSeasonPills(seasons) {
+      // A single season nobody can name (rows from before the season column) is
+      // no choice at all — hide the bar rather than show one meaningless pill.
+      ss.bar.hidden = seasons.length === 1 && seasons[0] === 0;
+      ss.seasons.innerHTML = "";
+      seasons.forEach((n) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "season" + (n === ss.season ? " on" : "");
+        b.setAttribute("role", "tab");
+        b.dataset.season = String(n);
+        b.textContent = n ? `Season ${n}` : "Unsorted";
+        b.onclick = () => { ss.season = n; ss.seasonOf = ss.entry.id; markSeason(); renderEpisodes(); };
+        ss.seasons.appendChild(b);
+      });
+    }
+
+    function markSeason() {
+      ss.seasons.querySelectorAll(".season").forEach((b) =>
+        b.classList.toggle("on", Number(b.dataset.season) === ss.season));
+    }
+
+    function renderEpisodes() {
+      const eps = ss.entry.episodes.filter((x) => (Number(x.season) || 0) === ss.season);
+      const ready = eps.filter(isDone).length;
+      ss.eps.innerHTML = "";
+      ss.eps.scrollLeft = 0;
+      ss.status.innerHTML =
+        `<b>${eps.length}</b> episode${eps.length === 1 ? "" : "s"} · ${ready} ready to play.`;
+      eps.forEach((ep, i) => ss.eps.appendChild(buildEpCard(ep, i)));
+      syncRailNav();
+    }
+
+    function buildEpCard(ep, i) {
+      const done = isDone(ep), busy = isBusy(ep);
+      const playable = done && ep.path;
+      const pct = clampPct(ep.progress);
+      const cover = ep.cover ? `/covers/${encodeURIComponent(ep.cover)}` : "";
+      // Rows from before the episode column fall back to their place in the rail.
+      const no = ep.episode_n ? `E${String(ep.episode_n).padStart(2, "0")}` : `#${i + 1}`;
+      const li = document.createElement("li");
+      li.className = "epcard";
+      li.dataset.id = ep.id;
+      li.style.setProperty("--i", i);
+      li.innerHTML = `
+        <div class="epthumb${cover ? "" : " empty"}">
+          ${cover ? `<img src="${cover}" alt="" loading="lazy" decoding="async"
+               onerror="this.parentElement.classList.add('empty');this.remove()" />` : ""}
+          <span class="epno">${escapeHtml(no)}</span>
+        </div>
+        <div class="epbody">
+          <div class="epname" title="${escapeHtml(ep.title ?? "")}">${escapeHtml(ep.title ?? "Untitled")}</div>
+          ${busy
+            ? `<span class="badge downloading">Downloading ${pct}%</span>
+               <div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
+            : ""}
+          <div class="epfoot">
+            <button type="button" class="btn btn--amber epget"${playable ? "" : " disabled"}>${playable ? "Watch ▶" : "Not ready"}</button>
+            <span class="tools">
+              ${done ? `<a class="qrbtn" href="qr-phone.html?id=${encodeURIComponent(ep.id)}" title="Send to phone" aria-label="Send to phone"></a>` : ""}
+              ${done ? `<button type="button" class="delbtn" title="Remove from shelf" aria-label="Remove from shelf"></button>` : ""}
+            </span>
+          </div>
+        </div>`;
+      if (playable) li.querySelector(".epget").onclick = () => openPlayer(ep);
+      const del = li.querySelector(".delbtn");
+      if (del) del.onclick = () => removeFilm(ep, li);
+      return li;
+    }
+
+    // A poll or a delete moved the data under an open sheet: rebuild it from the
+    // fresh entry, or shut it when its last episode has gone.
+    function refreshSeries(films) {
+      const fresh = shelfEntries(films).find((e) => e.id === ss.entry.id);
+      if (!fresh) { closeSeries(); return; }
+      ss.entry = fresh;
+      const seasons = seasonsOf(fresh);
+      if (!seasons.includes(ss.season)) ss.season = defaultSeason(seasons);
+      buildSeasonPills(seasons);
+      renderEpisodes();
+    }
+
+    /* The rail scrolls by just under a full width so a card stays half in view
+       as an affordance that there is more to the right. */
+    const railStep = () => Math.max(200, ss.eps.clientWidth * 0.82);
+    ss.prev.onclick = () => ss.eps.scrollBy({ left: -railStep(), behavior: "smooth" });
+    ss.next.onclick = () => ss.eps.scrollBy({ left: railStep(), behavior: "smooth" });
+    ss.eps.addEventListener("scroll", syncRailNav, { passive: true });
+    window.addEventListener("resize", syncRailNav);
+
+    function syncRailNav() {
+      const max = ss.eps.scrollWidth - ss.eps.clientWidth;
+      const x = ss.eps.scrollLeft;
+      // 4px of slack: sub-pixel widths mean scrollLeft never lands exactly on max.
+      const atStart = x <= 4, atEnd = x >= max - 4;
+      ss.prev.classList.toggle("gone", atStart);
+      ss.next.classList.toggle("gone", atEnd);
+      // The edge fades only earn their keep where there is more reel to reveal.
+      ss.rail.classList.toggle("atstart", atStart);
+      ss.rail.classList.toggle("atend", atEnd);
+    }
+
     // Throwing a film away is not undoable, so it costs one confirm. On success we
     // reload rather than just dropping the node: the shelf counts come from the
     // server and would otherwise be a reel out of date.
@@ -236,7 +531,8 @@
     // only removed films drop out, only new films are appended, and only a film whose
     // status actually changed gets its card replaced.
     function render(films) {
-      if (!films.length) {
+      const entries = shelfEntries(films);
+      if (!entries.length) {
         results.innerHTML = "";
         emptyState("Your shelf is empty.", "Find a film and pull it down — it'll wait here for you.");
         return;
@@ -244,25 +540,27 @@
       // Leaving from the empty state: drop its placeholder before diffing real cards.
       if (results.querySelector(".empty-state")) results.innerHTML = "";
 
-      const desiredIds = new Set(films.map((f) => String(f.id)));
+      const desiredIds = new Set(entries.map((e) => e.id));
       results.querySelectorAll(".film[data-id]").forEach((node) => {
         if (!desiredIds.has(node.dataset.id)) node.remove();
       });
 
-      films.forEach((f, i) => {
-        const status = (f.status ?? "").toLowerCase();
-        const existing = results.querySelector(`.film[data-id="${f.id}"]`);
+      entries.forEach((e, i) => {
+        const key = entryKey(e);
+        const existing = results.querySelector(`.film[data-id="${e.id}"]`);
         let node;
-        if (existing && existing.dataset.status === status) {
+        if (existing && existing.dataset.status === key) {
           node = existing;                 // unchanged → leave the DOM node exactly as-is
-        } else {
-          node = buildCard(f, i);          // new film, or status changed → (re)build
+        } else {                           // new entry, or one whose state moved
+          node = e.kind === "film" ? buildCard(e.film, i) : buildSeriesCard(e, i);
           if (existing) existing.replaceWith(node);
         }
         // Keep source order without disturbing cards already in the right place.
         const atPos = results.children[i];
         if (atPos !== node) results.insertBefore(node, atPos || null);
       });
+
+      if (ss.entry) refreshSeries(films);  // an open sheet must not go stale
     }
 
     function emptyState(big, msg) {

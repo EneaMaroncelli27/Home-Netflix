@@ -186,6 +186,14 @@ html,body{
      and push into the row beneath it. */
   height:60px;overflow:hidden;
 }
+/* Series an episode belongs to — sits above the episode title. The fixed height
+   is reserved on every card, blank for a film, so the rows stay level. */
+.film .series{
+  font-family:"Space Mono",monospace;font-size:15px;font-weight:700;
+  letter-spacing:.14em;text-transform:uppercase;color:#9A8C78;
+  height:20px;line-height:20px;margin:0 0 6px 0;overflow:hidden;white-space:nowrap;
+  text-overflow:ellipsis;
+}
 .foot{margin:16px 0 0 0;font-size:0;}
 .badge{
   display:inline-block;font-family:"Space Mono",monospace;font-size:15px;

@@ -16,7 +16,7 @@ import re
 import asyncio
 import threading
 
-DEFAULT_URL = ""
+DEFAULT_URL = os.getenv('URL','').strip()
 _URL_RE = re.compile(r"(?:https?://)?(streamingcommunity[\w-]*\.[a-z]{2,})", re.I)
 
 
