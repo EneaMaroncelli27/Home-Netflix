@@ -96,7 +96,7 @@
         </div>
       </div>
 
-      <div class="seasonbar">
+      <div class="seasonbar" id="seasonBar">
         <div class="cell pad">
           <div class="seasons" id="seasonPills"></div>
         </div>
@@ -252,6 +252,7 @@
   var qrFill      = $('qr-fill');
   var qrBytes     = $('qr-bytes');
   var seriesLayer = $('series-layer');
+  var seasonBar   = $('seasonBar');
   var seriesTitle = $('seriesTitle');
   var seriesClose = $('seriesClose');
   var seasonPills = $('seasonPills');
@@ -288,6 +289,11 @@
      seriesQueued['e' + id]. The 's'/'e' prefixes keep a numeric id from
      colliding with an Object.prototype member name. */
   var seriesOpen = false;
+  /* The layer serves two masters: 'find' pulls a season down from the catalog,
+     'shelf' walks episodes already on disk. Same nav, same rail, same Back
+     entry -- only the source of the episodes and what OK does differ. */
+  var seriesMode = 'find';
+  var shelfEntry = null;      // the shelf series on show, in 'shelf' mode
   var seriesFilm = null;
   var seriesSeason = 1;
   var seriesCache = {};       // 's<n>' -> episode array; one fetch per season
@@ -867,6 +873,8 @@
 
   function openSeries(f) {
     lastFocusBeforeSeries = document.activeElement;
+    seriesMode   = 'find';
+    shelfEntry   = null;
     seriesFilm   = f;
     seriesCache  = {};
     seriesQueued = {};
@@ -895,13 +903,27 @@
     seriesOpen = false;
     seriesRun++;                      // abandon any season fetch still in flight
     seriesLayer.className = '';
+    // Hand the layer back in its search shape, whichever mode just closed.
+    seriesMode = 'find';
+    shelfEntry = null;
+    seasonAll.style.display = '';
+    seasonBar.style.display = '';
     // Drop the stills rather than leaving a season's worth of decoded covers
     // resident behind a layer nobody is looking at.
     epTrack.innerHTML = '';
     seasonPills.innerHTML = '';
     seriesFilm = null;
     seriesCache = {};
-    if (lastFocusBeforeSeries) { setFocus(lastFocusBeforeSeries); }
+    if (lastFocusBeforeSeries) {
+      // A poll can redraw the shelf while the reel is up, which detaches the
+      // node we remembered — come back by id rather than losing the place.
+      var back = lastFocusBeforeSeries;
+      if (!document.body.contains(back)) {
+        var id = back.getAttribute && back.getAttribute('data-film-id');
+        back = (id && shelfResults.querySelector('[data-film-id="' + id + '"]')) || null;
+      }
+      if (back) { setFocus(back); }
+    }
   }
 
   /* ------------------------------ SEASONS -------------------------------- */
@@ -1130,6 +1152,168 @@
     eprail.className = 'eprail' + (atStart ? ' atstart' : '') + (atEnd ? ' atend' : '');
   }
 
+  /* ========================= THE SHELF REEL (shelf mode) ===================
+     The same layer, fed from /api/films instead of the catalog: these episodes
+     are already on disk, so there is nothing to download and no season fetch to
+     race. OK on an episode opens the ordinary film sheet — watch, send, remove.
+     ====================================================================== */
+
+  function openShelfSeries(e) {
+    lastFocusBeforeSeries = document.activeElement;
+    seriesMode = 'shelf';
+    shelfEntry = e;
+    seriesFilm = null;
+    seriesOpen = true;
+
+    seriesTitle.innerHTML = esc(e.title);
+    epTrack.innerHTML     = '';
+    // Nothing here is downloadable — it is already downloaded.
+    seasonAll.style.display = 'none';
+
+    var seasons = seasonsOf(e);
+    buildShelfPills(seasons);
+    seriesSeason = defaultSeason(seasons);
+    markSeasonPill(seriesSeason);
+    seriesLayer.className = 'open';
+    pushLevel('series');              // gives the Back key an entry to consume
+
+    renderShelfEpisodes();
+    focusShelfReel();
+  }
+
+  /* The strip is where the reel is steered from, so it takes focus first. With
+     one unnamed season there is no strip, and the first episode takes it. */
+  function focusShelfReel() {
+    var pill = seasonPills.getElementsByTagName('button')[0];
+    var ep   = epTrack.getElementsByTagName('article')[0];
+    setFocus((seasonBar.style.display !== 'none' && pill) || ep || seriesClose);
+  }
+
+  function buildShelfPills(seasons) {
+    // A single season nobody can name (rows from before the season column) is
+    // no choice at all — hide the strip rather than show one meaningless pill.
+    seasonBar.style.display = (seasons.length === 1 && !seasons[0]) ? 'none' : '';
+    seasonPills.innerHTML = '';
+    seasonPills.scrollLeft = 0;
+    for (var i = 0; i < seasons.length; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'season';
+      b.setAttribute('data-nav', '1');
+      b.setAttribute('data-season', String(seasons[i]));
+      b.innerHTML = seasons[i] ? ('S' + pad2(seasons[i])) : 'Unsorted';
+      b.__activate = shelfSeasonRunner(seasons[i]);
+      b.onclick = b.__activate;
+      seasonPills.appendChild(b);
+    }
+  }
+
+  /* A named factory, not a closure written inline in the loop above: `var` has
+     no block scope, so an inline handler would capture the variable rather
+     than the value and every pill would open the last season. */
+  function shelfSeasonRunner(n) {
+    return function () { seriesSeason = n; markSeasonPill(n); renderShelfEpisodes(); };
+  }
+
+  function renderShelfEpisodes() {
+    var eps = [], ready = 0, i;
+    for (i = 0; i < shelfEntry.episodes.length; i++) {
+      if ((Number(val(shelfEntry.episodes[i].season, 0)) || 0) === seriesSeason) {
+        eps.push(shelfEntry.episodes[i]);
+        if (statusOf(shelfEntry.episodes[i]) === 'completed') { ready++; }
+      }
+    }
+
+    epTrack.innerHTML = '';
+    epTrack.scrollLeft = 0;
+    seriesStatus.innerHTML = '<b>' + eps.length + '</b> episode' +
+      (eps.length === 1 ? '' : 's') + ' · ' + ready + ' ready to play.';
+
+    for (i = 0; i < eps.length; i++) { epTrack.appendChild(shelfEpisodeCard(eps[i], i)); }
+    // The last card drops its right margin, or the reel scrolls to a gap.
+    var cards = epTrack.getElementsByTagName('article');
+    if (cards.length) { cards[cards.length - 1].className += ' endrail'; }
+    syncRailNav();
+  }
+
+  function shelfEpisodeCard(ep, i) {
+    var status = statusOf(ep);
+    var pct    = Math.max(0, Math.min(100, Math.round(Number(val(ep.progress, 0)) || 0)));
+    var cover  = ep.cover ? ('/covers/' + encodeURIComponent(ep.cover)) : '';
+    // Rows from before the episode column fall back to their place in the rail.
+    var epno   = '<span class="epno">' +
+      (Number(val(ep.episode_n, 0)) ? ('E' + pad2(ep.episode_n)) : ('#' + (i + 1))) + '</span>';
+    var label  = status === 'completed'   ? 'On shelf'
+               : status === 'downloading' ? ('Downloading ' + pct + '%')
+               : val(ep.status, '—');
+
+    var card = document.createElement('article');
+    card.className = 'epcard';
+    card.setAttribute('data-nav', '1');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('data-film-id', String(ep.id));
+
+    card.innerHTML =
+      '<div class="frame">' +
+        (cover
+          ? '<img src="' + esc(cover) + '" alt="" />'
+          : '<div class="noart"><i>no artwork</i></div>') +
+        epno +
+      '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + esc(val(ep.title, 'Untitled')) + '</div>' +
+        '<div class="foot"><span class="badge ' + esc(status) + '">' + esc(label) + '</span></div>' +
+        (status === 'downloading'
+          ? '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'
+          : '') +
+      '</div>';
+
+    var img = card.getElementsByTagName('img')[0];
+    if (img) {
+      img.onerror = function () {
+        card.getElementsByTagName('div')[0].innerHTML =
+          '<div class="noart"><i>no artwork</i></div>' + epno;
+      };
+    }
+
+    /* Same bargain the shelf card strikes: the backend refuses delete and send
+       on anything mid-download, so the sheet only opens once it is finished. */
+    card.__activate = function () {
+      if (status === 'completed') { openFilmSheet(ep); }
+      else { seriesStatus.innerHTML = 'This episode is not ready yet.'; }
+    };
+    card.onclick = card.__activate;
+    return card;
+  }
+
+  /* A poll or a delete moved the shelf under an open reel: rebuild it from the
+     fresh entry, or close it when its last episode has gone. */
+  function refreshShelfSeries(entries) {
+    var fresh = null, i;
+    for (i = 0; i < entries.length; i++) {
+      if (entries[i].id === shelfEntry.id) { fresh = entries[i]; break; }
+    }
+    if (!fresh) { goBack(); return; }
+
+    var focusedId = null;
+    var act = document.activeElement;
+    if (act && act.getAttribute && act.getAttribute('data-film-id')) {
+      focusedId = act.getAttribute('data-film-id');
+    }
+
+    shelfEntry = fresh;
+    var seasons = seasonsOf(fresh);
+    var keep = false;
+    for (i = 0; i < seasons.length; i++) { if (seasons[i] === seriesSeason) { keep = true; } }
+    if (!keep) { seriesSeason = defaultSeason(seasons); }
+    buildShelfPills(seasons);
+    markSeasonPill(seriesSeason);
+    renderShelfEpisodes();
+
+    var again = focusedId && epTrack.querySelector('[data-film-id="' + focusedId + '"]');
+    if (again) { setFocus(again); } else { focusShelfReel(); }
+  }
+
   /* ================================ SHELF ================================ */
 
   function loadShelf() {
@@ -1149,10 +1333,8 @@
     return String(val(f.status, '')).toLowerCase();
   }
 
-  /* Episodes carry the id "<seriesId>-<episodeId>", so everything from one series
-     shares a prefix. Films get an empty key and stay at the front, in arrival
-     order. Sorting here keeps a series' episodes together and in broadcast order
-     instead of scattered through the shelf by download time. */
+  /* Episodes carry the id "<seriesId>-<episodeId>", so everything from one
+     series shares a prefix. A film has no prefix and stands on its own. */
   function seriesKey(f) {
     return String(val(f.type, '')) === 'episode' ? String(f.id).split('-')[0] : '';
   }
@@ -1161,37 +1343,90 @@
     return Number(String(f.id).split('-')[1]) || 0;
   }
 
-  function groupBySeries(films) {
-    return films.slice().sort(function (a, b) {
-      var ka = seriesKey(a), kb = seriesKey(b);
-      if (ka !== kb) { return ka < kb ? -1 : 1; }
-      if (!ka) { return 0; }
-      // Rows stored before the series columns existed have no season or episode
-      // number, so fall back to the episode id for those.
-      return (Number(val(a.season, 0)) - Number(val(b.season, 0))) ||
-             (Number(val(a.episode_n, 0)) - Number(val(b.episode_n, 0))) ||
-             (epSuffix(a) - epSuffix(b));
-    });
+  /* One shelf entry per film and one per SERIES: a series' episodes collapse
+     into a single card that opens the reel. Entries keep the order the backend
+     sent, so a series sits where its first episode landed. */
+  function shelfEntries(films) {
+    var entries = [], index = {}, i, f, key, e;
+    for (i = 0; i < films.length; i++) {
+      f = films[i];
+      key = seriesKey(f);
+      if (!key) { entries.push({ kind: 'film', id: String(f.id), film: f }); continue; }
+      // 's' prefix on the lookup key: a numeric series id must not collide with
+      // anything Object.prototype already answers to.
+      e = index['s' + key];
+      if (!e) {
+        e = { kind: 'series', key: key, id: 's:' + key, title: '', episodes: [] };
+        index['s' + key] = e;
+        entries.push(e);
+      }
+      e.episodes.push(f);
+      // Rows saved before the series columns existed carry no title; one row
+      // that has one is enough to name the whole group.
+      if (!e.title && f.series_title) { e.title = String(f.series_title); }
+    }
+    for (i = 0; i < entries.length; i++) {
+      if (entries[i].kind !== 'series') { continue; }
+      if (!entries[i].title) { entries[i].title = 'Series ' + entries[i].key; }
+      entries[i].episodes.sort(function (a, b) {
+        // Rows with no season or episode number fall back to the episode id.
+        return (Number(val(a.season, 0)) - Number(val(b.season, 0))) ||
+               (Number(val(a.episode_n, 0)) - Number(val(b.episode_n, 0))) ||
+               (epSuffix(a) - epSuffix(b));
+      });
+    }
+    return entries;
   }
 
-  function renderShelf(unsorted) {
-    var films = groupBySeries(unsorted);
-    var ready = 0, i;
+  function seriesStats(e) {
+    var total = e.episodes.length, ready = 0, busy = 0, sum = 0, i, st;
+    for (i = 0; i < total; i++) {
+      st = statusOf(e.episodes[i]);
+      if (st === 'completed') { ready++; }
+      else if (st === 'downloading') { busy++; sum += Number(val(e.episodes[i].progress, 0)) || 0; }
+    }
+    // How far the episodes still running have got, between them.
+    return { total: total, ready: ready, busy: busy,
+             pct: busy ? Math.max(0, Math.min(100, Math.round(sum / busy))) : 0 };
+  }
+
+  function seasonsOf(e) {
+    var seen = {}, out = [], i, n;
+    for (i = 0; i < e.episodes.length; i++) {
+      n = Number(val(e.episodes[i].season, 0)) || 0;
+      if (!seen['s' + n]) { seen['s' + n] = true; out.push(n); }
+    }
+    out.sort(function (a, b) { return a - b; });
+    return out;
+  }
+
+  /* Season 0 is the bucket for rows saved before the season column existed. A
+     series can hold both, and the named season is the one worth opening on. */
+  function defaultSeason(seasons) {
+    for (var i = 0; i < seasons.length; i++) { if (seasons[i]) { return seasons[i]; } }
+    return seasons[0];
+  }
+
+  function renderShelf(films) {
+    var entries = shelfEntries(films), ready = 0, i;
     for (i = 0; i < films.length; i++) {
       if (statusOf(films[i]) === 'completed') { ready++; }
     }
+    // The chip counts reels — every file on disk. The statusline counts what the
+    // grid actually shows, where a whole series is one card.
     chip.innerHTML = '<b>' + films.length + '</b> film' +
       (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready';
 
-    if (!films.length) {
+    if (!entries.length) {
       shelfStatus.innerHTML = '';
       emptyInto(shelfResults, 'Your shelf is empty.',
         'Find a film and pull it down — it will wait here for you.');
       return;
     }
 
-    shelfStatus.innerHTML = '<b>' + films.length + '</b> film' +
-      (films.length === 1 ? '' : 's') + ' · ' + ready + ' ready. Press OK on a film for options.';
+    shelfStatus.innerHTML = '<b>' + entries.length + '</b> title' +
+      (entries.length === 1 ? '' : 's') + ' · ' + ready +
+      ' reel' + (ready === 1 ? '' : 's') + ' ready. Press OK on a film for options, or on a series for its episodes.';
 
     // Keep the focused card focused across a poll redraw, otherwise the
     // selection jumps back to the top every couple of seconds.
@@ -1202,8 +1437,10 @@
     }
 
     shelfResults.innerHTML = '';
-    for (i = 0; i < films.length; i++) {
-      shelfResults.appendChild(shelfCard(films[i]));
+    for (i = 0; i < entries.length; i++) {
+      shelfResults.appendChild(entries[i].kind === 'film'
+        ? shelfCard(entries[i].film)
+        : shelfSeriesCard(entries[i]));
     }
     markRowEnds(shelfResults);
 
@@ -1211,6 +1448,60 @@
       var again = shelfResults.querySelector('[data-film-id="' + focusedId + '"]');
       if (again) { setFocus(again); }
     }
+
+    // A reel open over the shelf is looking at this same data — keep it current.
+    if (seriesOpen && seriesMode === 'shelf') { refreshShelfSeries(entries); }
+  }
+
+  /* A series is one card: the first episode's artwork, the series name, and how
+     much of it is on disk. OK opens the reel, the same gesture a search hit
+     uses to go from a series to its episodes. */
+  function shelfSeriesCard(e) {
+    var st    = seriesStats(e);
+    var art   = null, i;
+    for (i = 0; i < e.episodes.length; i++) {
+      if (e.episodes[i].cover) { art = e.episodes[i]; break; }
+    }
+    var cover = art ? ('/covers/' + encodeURIComponent(art.cover)) : '';
+    var label = st.busy
+      ? (st.busy + ' downloading ' + st.pct + '%')
+      : (st.ready + ' of ' + st.total + ' on shelf');
+
+    var card = document.createElement('article');
+    card.className = 'film series';
+    card.setAttribute('data-nav', '1');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('data-film-id', e.id);
+
+    card.innerHTML =
+      '<div class="frame">' +
+        (cover
+          ? '<img src="' + esc(cover) + '" alt="" />'
+          : '<div class="noart"><i>no artwork</i></div>') +
+        '<div class="play">≡</div>' +
+      '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + esc(e.title) + '</div>' +
+        // One badge, not two: "3 of 3 on shelf" already carries the count, and
+        // .foot is font-size:0, so a second inline badge would butt against it.
+        '<div class="foot"><span class="badge ' + (st.busy ? 'downloading' : 'completed') + '">' +
+          esc(label) + '</span></div>' +
+        (st.busy
+          ? '<div class="track"><div class="fill" style="width:' + st.pct + '%"></div></div>'
+          : '') +
+      '</div>';
+
+    var img = card.getElementsByTagName('img')[0];
+    if (img) {
+      img.onerror = function () {
+        card.getElementsByTagName('div')[0].innerHTML =
+          '<div class="noart"><i>no artwork</i></div><div class="play">≡</div>';
+      };
+    }
+
+    card.__activate = function () { openShelfSeries(e); };
+    card.onclick    = card.__activate;
+    return card;
   }
 
   function shelfCard(f) {
@@ -1218,9 +1509,6 @@
     var playable = (status === 'completed' && !!f.path);
     var pct      = Math.max(0, Math.min(100, Math.round(Number(val(f.progress, 0)) || 0)));
     var title    = val(f.title, 'Untitled');
-    var series   = f.series_title ? String(f.series_title) : '';
-    // Older episode rows have no season number — they just show their own title.
-    var epTag    = Number(val(f.season, 0)) ? ('S' + f.season + 'E' + f.episode_n + ' · ') : '';
     var cover    = f.cover ? ('/covers/' + encodeURIComponent(f.cover)) : '';
 
     var label;
@@ -1242,10 +1530,7 @@
         (playable ? '<div class="play">▶</div>' : '') +
       '</div>' +
       '<div class="info">' +
-        /* Always emitted, empty for a film: the cards are inline-blocks, so a
-           line that appears on some of them alone would stagger the rows. */
-        '<div class="series">' + esc(series) + '</div>' +
-        '<div class="name">' + esc(epTag) + esc(title) + '</div>' +
+        '<div class="name">' + esc(title) + '</div>' +
         '<div class="foot"><span class="badge ' + esc(status) + '">' + esc(label) + '</span></div>' +
         (status === 'downloading'
           ? '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'
@@ -1294,7 +1579,10 @@
 
   function schedulePoll(films) {
     stopPolling();
-    if (view !== 'shelf' || playerOpen || modalOpen || seriesOpen) { return; }
+    // The shelf reel shows the same downloads the grid does, so it keeps the
+    // poll alive; the search reel has nothing to poll for and stops it.
+    if (view !== 'shelf' || playerOpen || modalOpen) { return; }
+    if (seriesOpen && seriesMode !== 'shelf') { return; }
     var busy = false;
     for (var i = 0; i < films.length; i++) {
       if (statusOf(films[i]) === 'downloading') { busy = true; break; }
