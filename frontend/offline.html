@@ -106,6 +106,11 @@
     function openPlayer(film) {
       modalTitle.textContent = film.title ?? "";
       player.src = `/movies/${encodeURIComponent(film.path)}`;
+      // An episode is played from the series sheet, which is the same kind of
+      // overlay and sits later in the document — left up it would paint straight
+      // over the video. It steps aside here and comes back in closePlayer, so
+      // watching an episode returns the reader to the episode list.
+      ss.el.classList.remove("open");
       modal.classList.add("open");
       player.play().catch(() => {});
     }
@@ -114,6 +119,9 @@
       player.removeAttribute("src");
       player.load();
       modal.classList.remove("open");
+      // `entry` outlives the hide above, so it still says whether a sheet was
+      // up — and is cleared if the series went away while the film played.
+      if (ss.entry) ss.el.classList.add("open");
     }
     document.getElementById("modalClose").onclick = closePlayer;
     modal.onclick = (e) => { if (e.target === modal) closePlayer(); };

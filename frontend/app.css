@@ -195,6 +195,9 @@ body{
 .modal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;
   padding:28px;background:rgba(8,6,5,.92);backdrop-filter:blur(6px);}
 .modal.open{display:flex;animation:fade .25s var(--ease);}
+/* Two overlays share .modal, and the series sheet is the later of the two in
+   the document. The player is always the top one while it is up. */
+#modal{z-index:70;}
 .modal .stage{width:min(1040px,100%);}
 .modal .head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px;}
 .modal .now{font-family:var(--mono);font-size:.66rem;letter-spacing:.3em;text-transform:uppercase;color:var(--bulb);margin:0 0 4px;}
