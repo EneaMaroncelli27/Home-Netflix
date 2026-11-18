@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from backend.scripts.utlis import check_connection
+from backend.scripts.utils import check_connection
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -16,6 +16,7 @@ from backend.scripts.search import search_by_title, get_episodes
 from backend.scripts.download import download_film
 from backend.scripts.urlgetter import URL, COVER_URL
 from backend.db import list_films, delete_film_db, get_path, get_cover, get_status
+from backend.scripts.utils import change_language
 import shutil
 import qrcode
 import urllib.parse
@@ -346,6 +347,12 @@ async def phone_download(sess: str, request: Request):
         headers=headers,
     )
 
+@app.get('/api/switch-language')
+def switch_lan(language : str):
+    if change_language(language):
+        return {"status":"ok"}
+    else:
+        raise HTTPException(status_code=400,detail="language not available")
 
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 app.mount("/movies", StaticFiles(directory=MOVIES_DIR), name="movies")

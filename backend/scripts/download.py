@@ -5,7 +5,7 @@ import requests
 from playwright.async_api import async_playwright
 from backend.scripts.film import Film
 from backend.scripts.urlgetter import URL, COVER_URL
-from backend.scripts.utlis import safe_name
+from backend.scripts.utils import safe_name, get_language
 from backend.db import add_film, update_status, get_status, delete_film_db, update_progress
 
 log = logging.getLogger("download")
@@ -42,9 +42,9 @@ async def download_film(movie : Film):
         if movie.type == "episode":
             episode_id = movie.id.split('-')[1]
             film_id = movie.id.split('-')[0]
-            await page.goto(URL + f'/it/watch/{film_id}?e={episode_id}', timeout=20000)
+            await page.goto(URL + f'/{get_language()}/watch/{film_id}?e={episode_id}', timeout=60000)
         else: 
-            await page.goto(URL + f'/it/watch/{movie.id}', timeout=20000)
+            await page.goto(URL + f'/{get_language()}/watch/{movie.id}', timeout=60000)
         try:
             await asyncio.wait_for(found.wait(), timeout=10.0)
         except asyncio.TimeoutError:

@@ -2,13 +2,14 @@ import json
 import requests
 from backend.scripts.film import Film
 from backend.scripts.urlgetter import URL
+from backend.scripts.utils import get_language
 from bs4 import BeautifulSoup
 import re
 
 DATA_PAGE_RE = re.compile(r'data-page="([^"]+)"')
 
 HEADERS = {
-        "referrer": URL + '/it/archive',
+        "referrer": URL + f'/{get_language()}/archive',
         "Content-Type":"application/json",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
         "Accept": "text/html, application/xhtml+xml",
@@ -29,7 +30,7 @@ def find_image_cover( images : list ):
 
 def search_by_title( name : str ) -> list:
     session = requests.Session()
-    r = session.get(URL + f'/it/archive?search={name}',headers=HEADERS)
+    r = session.get(URL + f'/{get_language()}/archive?search={name}',headers=HEADERS)
     if r.status_code != 200:
         return
     soup = BeautifulSoup(r.text,'html.parser')
@@ -45,7 +46,8 @@ def search_by_title( name : str ) -> list:
 
 def get_episodes( film : Film, season : int):
     session = requests.Session()
-    r = session.get(URL + f'/it/titles/{film.id}-{film.slug}' + f'/season-{season}')
+    r = session.get(URL + f'/{get_language()}/titles/{film.id}-{film.slug}' + f'/season-{season}')
+    print(r.url)
     soup = BeautifulSoup(r.text,'html.parser')
     data = soup.find('div',id="app")
     json_data = json.loads(data['data-page'])

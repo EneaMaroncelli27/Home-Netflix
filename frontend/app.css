@@ -91,6 +91,11 @@ body{
 .tagline b{color:var(--screen);font-weight:400;}
 .masthead-side{display:flex;align-items:center;gap:14px;flex-shrink:0;}
 
+/* ---- Catalog language pills (reuse the season-pill look) ---- */
+.langbar{display:flex;gap:6px;flex-shrink:0;}
+.langbar .season{padding:7px 12px;}
+.langbar .season:disabled{opacity:.5;cursor:progress;}
+
 .rule{height:1px;border:0;margin:28px 0 0;
   background:linear-gradient(90deg,var(--bulb),var(--line) 22%,transparent);}
 

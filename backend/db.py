@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from backend.scripts.film import Film, Stored
-from backend.scripts.utlis import safe_name
+from backend.scripts.utils import safe_name
 
 # Keep the DB inside a directory so a missing file can't be turned into a
 # directory by a Docker single-file bind mount. Override with DB_PATH env.

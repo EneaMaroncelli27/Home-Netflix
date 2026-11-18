@@ -19,6 +19,10 @@
         <p class="tagline">Find a film or a series. Pull it down to your <b>shelf</b>.</p>
       </div>
       <div class="masthead-side">
+        <div class="langbar" id="langbar" role="group" aria-label="Catalog language">
+          <button class="season" type="button" data-lang="it">IT</button>
+          <button class="season" type="button" data-lang="en">EN</button>
+        </div>
         <span class="chip live"><span class="dot"></span> Catalog online</span>
         <a class="btn btn--ghost" href="/offline.html">My shelf →</a>
       </div>
@@ -88,6 +92,62 @@
     const statusEl = document.getElementById("status");
     const results = document.getElementById("results");
     const raw = document.getElementById("raw");
+
+    // ============================================================
+    //  CATALOG LANGUAGE
+    //  The catalog serves a localised site per language, and the code is a
+    //  URL path segment — /it/archive, /en/watch/<id>. Switching it changes
+    //  which catalog search and download actually reach for.
+    //
+    //  There is no endpoint to READ the current language, so the choice is
+    //  kept here and re-sent on load: the backend starts at "it" every time
+    //  the process restarts, and this is what puts it back in step.
+    // ============================================================
+    const LANG_KEY = "hn.language";
+    const langbar = document.getElementById("langbar");
+    const langPills = [...langbar.querySelectorAll(".season")];
+    let language = localStorage.getItem(LANG_KEY) || "it";
+    let langBusy = false;
+
+    function markLang(l) {
+      langPills.forEach((b) => {
+        const on = b.dataset.lang === l;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }
+
+    // rerun=false on the startup re-sync, so loading the page never fires a
+    // search nobody asked for.
+    async function setLanguage(l, rerun) {
+      if (langBusy) return;
+      langBusy = true;
+      langPills.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetch(`${API}/api/switch-language?language=${encodeURIComponent(l)}`);
+        if (!res.ok) {
+          if (rerun) statusEl.textContent = `The catalog wouldn't switch to ${l.toUpperCase()} (HTTP ${res.status}).`;
+          markLang(language);
+          return;
+        }
+        language = l;
+        localStorage.setItem(LANG_KEY, l);
+        markLang(l);
+        if (!rerun) return;
+        if (q.value.trim() && results.children.length) search();
+        else statusEl.textContent = `Catalog language set to ${l.toUpperCase()}.`;
+      } catch (e) {
+        if (rerun) statusEl.textContent = "The catalog didn't answer the language switch.";
+        markLang(language);
+      } finally {
+        langBusy = false;
+        langPills.forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    langPills.forEach((b) => { b.onclick = () => setLanguage(b.dataset.lang, true); });
+    markLang(language);
+    setLanguage(language, false);
 
     // A series has type "tv" and a season count; a film has type "movie".
     const isSeries = (f) => f && f.type === "tv";
