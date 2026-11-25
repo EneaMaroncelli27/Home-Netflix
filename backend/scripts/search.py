@@ -6,8 +6,6 @@ from backend.scripts.utils import get_language
 from bs4 import BeautifulSoup
 import re
 
-DATA_PAGE_RE = re.compile(r'data-page="([^"]+)"')
-
 HEADERS = {
         "referrer": URL + f'/{get_language()}/archive',
         "Content-Type":"application/json",
@@ -36,26 +34,26 @@ def search_by_title( name : str ) -> list:
     soup = BeautifulSoup(r.text,'html.parser')
     data = soup.find('div',id="app")
     json_data = json.loads(data['data-page'])
-    films = json_data["props"]["titles"]
-    films_found = []
-    for f in films:
-        film = Film(f["name"], find_image_cover(f["images"]), f["slug"], str(f["id"]), f['type'], f['seasons_count'])
-        films_found.append(film)
+    films  =  json_data["props"]["titles"]
+    films_found : list[Film] = []
+    for film in films:
+        film["cover"] = find_image_cover(film["images"])
+        film["lang"] = get_language()
+        films_found.append(Film.model_validate(film))
     
     return films_found
 
 def get_episodes( film : Film, season : int):
     session = requests.Session()
-    r = session.get(URL + f'/{get_language()}/titles/{film.id}-{film.slug}' + f'/season-{season}')
-    print(r.url)
+    r = session.get(URL + f'/{film.lang}/titles/{film.id}-{film.slug}' + f'/season-{season}')
     soup = BeautifulSoup(r.text,'html.parser')
     data = soup.find('div',id="app")
     json_data = json.loads(data['data-page'])
     episodes = json_data["props"]["loadedSeason"]["episodes"]
     episodes_found = []
     for n, ep in enumerate(episodes, start=1):
-        episode = Film(ep["name"], find_image_cover(ep["images"]), film.slug, f"{film.id}-{ep['id']}", f'episode', 0,
-                       series_title=film.title, season=season, episode_n=n)
+        episode = Film(name=ep["name"], cover=find_image_cover(ep["images"]), slug=film.slug, id=f"{film.id}-{ep['id']}", type=f'episode', seasons_count=0,
+                       serie_title=film.name, season=season, episode_n=n, lang=film.lang)
         episodes_found.append(episode)
 
     return episodes_found

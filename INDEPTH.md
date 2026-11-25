@@ -9,11 +9,11 @@ backend/
   main.py            FastAPI app: routes, static file mounts, filesystem browsing
   db.py              SQLite access layer (schema, CRUD for the films table)
   scripts/
-    film.py           Film / Stored data classes
+    film.py           Media / Film / Stored pydantic models
     search.py         Queries the catalog site and parses results
     download.py       Playwright + yt-dlp download pipeline
     urlgetter.py      Resolves the catalog's current (rotating) domain via Telegram
-    utlis.py          Connectivity check used to pick online/offline frontend
+    utils.py          Connectivity check, filename sanitiser, catalog language
     tg_session.py     One-time CLI to generate a Telethon session string
 frontend/
   index.html          Search page ("Find a film")
@@ -30,7 +30,7 @@ webOS-webapp/
   appinfo.json.example Template for the per-install appinfo.json (gitignored)
   icon.png, largeIcon.png   Launcher icons
   *.ipk                Prebuilt packages, kept for reference
-Movies/, Covers/, data/  Runtime storage (video files, cover art, SQLite DB)
+Films/, Covers/, data/  Runtime storage (video files, cover art, SQLite DB)
 ```
 
 There is no frontend build step. The HTML pages are served directly as static files, each with its own inline `<script>` block, and talk to the backend purely over `fetch()` — except `webos.html`, which uses `XMLHttpRequest` for reasons covered in its own section below.
@@ -55,21 +55,29 @@ The frontend never hardcodes the catalog domain. It calls `/api/config` on load 
 
 The catalog's archive page embeds its search results as a JSON blob inside a `data-page` attribute on a `<div id="app">` (a common pattern for server-rendered Inertia.js-style apps). The scraper:
 
-1. Requests `{URL}/it/archive?search={title}` with headers that mimic a real browser (referrer, `X-Requested-With`, `Sec-Fetch-*`) so the request isn't rejected as non-browser traffic.
+1. Requests `{URL}/{lang}/archive?search={title}` (`lang` is the current catalog language, see below) with headers that mimic a real browser (referrer, `X-Requested-With`, `Sec-Fetch-*`) so the request isn't rejected as non-browser traffic.
 2. Parses the HTML with BeautifulSoup, finds `#app`, and `json.loads()`s its `data-page` attribute.
-3. Walks `props.titles`, and for each entry builds a `Film` (title, cover filename, slug, id, type, season count), picking the cover image whose `type` is `"cover"` out of each title's `images` array.
+3. Walks `props.titles`. Each entry is the catalog's own JSON object; the scraper adds two keys to it — `cover`, the filename of the image whose `type` is `"cover"` in the entry's `images` array, and `lang`, the language the search ran in — and hands the whole dict to `Film.model_validate()`. The catalog's key names (`id`, `name`, `slug`, `type`, `seasons_count`) are the model's field names, so there is no mapping step; keys the model doesn't declare are ignored.
 
 No browser automation is needed for search — it's a plain HTTP request, since the search results are present in the initial HTML response.
 
+## Catalog language
+
+The catalog publishes an Italian and an English edition under `/{lang}/…`. The current language lives in one module-level variable in `utils.py` (`language`, default `"it"`), read through `get_language()` and written through `change_language()`, which accepts only `"it"` and `"en"` — the value is interpolated into catalog URLs, so the allowlist is what keeps it from becoming a path injection.
+
+`GET /api/switch-language?language=it|en` sets it, answering `{"status":"ok"}` or 400 for anything else. The search page shows IT / EN pills; the choice is kept in `localStorage` and re-sent on every page load, because the server has no endpoint to read the language back and starts at `"it"` after each restart. The setting is process-wide: every client shares it, and the TV build has no control of its own.
+
+Every `Film` carries the language it was found in as `lang`. Search stamps it, `get_episodes()` both fetches the season from `{URL}/{film.lang}/titles/…` and copies `film.lang` onto each episode, and `add_film()` stores it in the `lang` column and puts it in the filename, so the same title in two languages would not share a file name. `download_film()` still builds the watch URL from the global `get_language()` rather than `film.lang` — see the rough edges.
+
 ## Download pipeline
 
-`POST /api/download` takes a `FilmIn` body and immediately returns `{"status": "ok"}`, handing the actual work to a FastAPI `BackgroundTasks` task running `download_film()`. This keeps the request non-blocking; progress is polled separately via `/api/films`.
+`POST /api/download` takes a `Film` body (the same pydantic model search returns, so a search hit can be posted back as-is) and immediately returns `{"status": "ok"}`, handing the actual work to a FastAPI `BackgroundTasks` task running `download_film()`. This keeps the request non-blocking; progress is polled separately via `/api/films`.
 
 `backend/scripts/download.py::download_film()` does two very different things in sequence:
 
-**1. Finding the real video URL (Playwright).** The catalog site doesn't expose a direct, stable download link — the actual HLS playlist URL is only visible in network traffic once the player loads. So a headless Chromium instance (Playwright) visits the watch page (`{URL}/it/watch/{id}`), with images/stylesheets/fonts blocked for speed, and a request listener watches for any request whose URL contains `token` and `playlist/` (excluding jwplayer's own internal requests). The first match found within a 10-second window is taken as the download URL; the browser is closed immediately after, whether or not anything was found.
+**1. Finding the real video URL (Playwright).** The catalog site doesn't expose a direct, stable download link — the actual HLS playlist URL is only visible in network traffic once the player loads. So a headless Chromium instance (Playwright) visits the watch page (`{URL}/{lang}/watch/{id}`), with images/stylesheets/fonts blocked for speed, and a request listener watches for any request whose URL contains `token` and `playlist/` (excluding jwplayer's own internal requests). The first match found within a 10-second window is taken as the download URL; the browser is closed immediately after, whether or not anything was found.
 
-**2. Downloading the file (yt-dlp).** Once a playlist URL is known, the film row is inserted into the DB (status `downloading`, progress `0`) via `add_film()`. If the id already exists and its status is `completed`, the function returns early — a rerun on an already-downloaded film is a no-op rather than a fresh save. yt-dlp then downloads the HLS stream directly to `Movies/{safe_title}-{safe_id}.mp4` (see Series and episodes for why the id is in the name), using native HLS with 16 concurrent fragment downloads. A custom progress hook computes a percentage from whichever fields yt-dlp provides for the current stream (native `_percent`, byte counts, or fragment index/count as a last resort) and writes it to the DB only when the whole-percent value changes, to avoid a DB write per fragment. Progress is capped at 99% during download and explicitly set to 100 + status `completed` only after `ydl.download()` returns successfully. The cover image is fetched synchronously in the same worker thread, right before the yt-dlp call.
+**2. Downloading the file (yt-dlp).** Once a playlist URL is known, the film row is inserted into the DB (status `downloading`, progress `0`) via `add_film()`. If the id already exists and its status is `completed`, the function returns early — a rerun on an already-downloaded film is a no-op rather than a fresh save. yt-dlp then downloads the HLS stream directly to `Films/{safe_name}-{safe_lang}-{safe_id}.mp4` (see Series and episodes for why the id is in the name), using native HLS with 16 concurrent fragment downloads. A custom progress hook computes a percentage from whichever fields yt-dlp provides for the current stream (native `_percent`, byte counts, or fragment index/count as a last resort) and writes it to the DB only when the whole-percent value changes, to avoid a DB write per fragment. Progress is capped at 99% during download and explicitly set to 100 + status `completed` only after `ydl.download()` returns successfully. The cover image is fetched synchronously in the same worker thread, right before the yt-dlp call.
 
 If the download throws at any point, the film's DB row is deleted (`delete_film_db`) and the exception is re-raised into the background task (where FastAPI logs it, but there's no user-facing error surface for a failed background download today — the film simply disappears from the shelf).
 
@@ -77,17 +85,19 @@ The blocking parts (`requests.get` for the cover, `yt_dlp.YoutubeDL(...).downloa
 
 ## Series and episodes
 
-The catalog returns films and series through the same search endpoint, distinguished by a `type` field: `"movie"` or `"tv"`. A `tv` entry also carries `seasons_count`, which `search_by_title()` maps onto `Film.season_c`. Both fields ride on `Film` and on the `FilmIn` request model, and `type` has **no default** on `FilmIn` — a body that omits it is rejected with a 422 before the handler runs.
+The catalog returns films and series through the same search endpoint, distinguished by a `type` field: `"movie"` or `"tv"`. A `tv` entry also carries `seasons_count`. Both land on `Film` under the catalog's own names, and `Film` is also the request model every POST takes. `type`, `seasons_count`, `lang` and `slug` have **no default** — a body that omits one, or sends it as `null`, is rejected with a 422 before the handler runs.
 
 A series is never downloaded as one thing. It is expanded into episodes first, and an episode is downloaded by exactly the same path a film is.
 
-**Listing a season.** `POST /api/episodes?season=N` takes a `FilmIn` body and fetches `{URL}/it/titles/{id}-{slug}/season-{N}`, reading `props.loadedSeason.episodes` out of the same `data-page` blob that search parses. Each episode comes back as a `Film` with `type: "episode"` and a **composite id** of `"{film_id}-{episode_id}"`. That composite is the whole trick: it keeps an episode addressable by the one id field the rest of the app already passes around, with no second lookup and no schema change.
+**Listing a season.** `POST /api/episodes?season=N` takes a `Film` body and fetches `{URL}/{film.lang}/titles/{id}-{slug}/season-{N}`, reading `props.loadedSeason.episodes` out of the same `data-page` blob that search parses. Each episode comes back as a `Film` with `type: "episode"`, a **composite id** of `"{film_id}-{episode_id}"`, and three fields a film leaves empty: `serie_title` (the series' name), `season`, and `episode_n` (its 1-based position in the season). The composite id keeps an episode addressable by the one id field the rest of the app already passes around, with no second lookup; the three series fields are what the shelf groups and orders by.
 
-**Downloading an episode.** `download_film()` splits the composite back apart and visits `{URL}/it/watch/{film_id}?e={episode_id}` instead of the plain watch page. Everything downstream — Playwright's playlist sniffing, yt-dlp, the progress hook, the DB row — is untouched, so an episode lands on the shelf as its own entry, named for the episode rather than the series.
+**Downloading an episode.** `download_film()` splits the composite back apart and visits `{URL}/{lang}/watch/{film_id}?e={episode_id}` instead of the plain watch page. Everything downstream — Playwright's playlist sniffing, yt-dlp, the progress hook — is untouched, and the DB row stores the episode's own name plus `serie_title`, `season` and `episode_n` exactly as the client posted them. A client that drops those fields gets an episode stored as `serie_title = NULL`, season 0, which the shelf can only show as "Series <id>" — so every client must post the episode object back whole.
+
+**On the shelf.** Both `offline.html` and `webos.html` collapse a series' episodes into one card. The grouping key is the part of the composite id before the `-` (so it works even for rows with no `serie_title`), the card is named from the first row that has a `serie_title`, and episodes are ordered by `season`, then `episode_n`, then the episode id. Opening the card shows season pills and that season's episodes; season 0 is the bucket for rows saved before the season column existed.
 
 **Downloading a whole season.** `POST /api/download_season?season=N` re-reads the season server-side and queues one background task per episode. It deliberately does not trust a client-supplied episode list. Note that it re-fetches the season *synchronously inside an `async def`*, so the request blocks the event loop for the length of that fetch and can sit for a few seconds before answering — clients need a generous timeout on this one endpoint.
 
-**Filenames.** With episodes in the picture, titles collide constantly ("Pilot" appears in every series), so `add_film()` no longer names files after the title alone. Both the title and the id go through `utlis.safe_name()` — which swaps the characters no filesystem accepts for `-`, truncates to 180 bytes and never returns empty — and the row stores `{safe_title}-{safe_id}.mp4`. `download.py` builds its yt-dlp `outtmpl` from the same two pieces, and the two must stay in step: yt-dlp does not sanitise the literal part of a template, so this is also what keeps the write inside `Movies/`. The DB's `films.id` is a `TEXT` primary key rather than an integer for the same reason — a composite episode id is not a number.
+**Filenames.** With episodes in the picture, names collide constantly ("Pilot" appears in every series), so `add_film()` does not name files after the name alone. The name, the language and the id each go through `utils.safe_name()` — which swaps the characters no filesystem accepts for `-`, truncates to 180 bytes and never returns empty — and the row stores `{safe_name}-{safe_lang}-{safe_id}.mp4` (and `.webp` for the cover). `download.py` builds its yt-dlp `outtmpl` and the cover path from the same three pieces, and the two must stay in step: yt-dlp does not sanitise the literal part of a template, so this is also what keeps the write inside `Films/`. Rows saved before language support keep their old `{safe_name}-{safe_id}` names; every reader goes through the stored `path`, so they still resolve. The DB's `films.id` is a `TEXT` primary key rather than an integer for the same reason — a composite episode id is not a number.
 
 ## Data model and storage
 
@@ -95,18 +105,26 @@ A series is never downloaded as one thing. It is expanded into episodes first, a
 
 ```sql
 CREATE TABLE films (
-  id INTEGER PRIMARY KEY,       -- catalog's own film id, reused as our primary key
-  title VARCHAR(255) NOT NULL,
-  path VARCHAR(255) NOT NULL,   -- filename under Movies/
-  cover VARCHAR(255),           -- filename under Covers/
-  status VARCHAR(255) NOT NULL, -- "downloading" | "completed"
-  progress INTEGER NOT NULL DEFAULT 0
+  id TEXT PRIMARY KEY NOT NULL,   -- catalog id; "<film>-<episode>" for an episode
+  name VARCHAR(255) NOT NULL,     -- film or episode name
+  type VARCHAR(255) NOT NULL,     -- "movie" | "tv" | "episode"
+  path VARCHAR(255) NOT NULL,     -- filename under Films/
+  cover VARCHAR(255),             -- filename under Covers/
+  status VARCHAR(255) NOT NULL,   -- "downloading" | "completed"
+  seasons_count INTEGER NOT NULL DEFAULT 0,
+  progress INTEGER NOT NULL DEFAULT 0,
+  serie_title VARCHAR(255),       -- episodes only: the series' name
+  season INTEGER NOT NULL DEFAULT 0,
+  episode_n INTEGER NOT NULL DEFAULT 0,
+  lang VARCHAR(8)                 -- catalog language the film was found in
 )
 ```
 
-Each function (`add_film`, `update_status`, `update_progress`, `delete_film`, `list_films`, `get_path`) opens its own short-lived `sqlite3.connect()` — there's no connection pool or ORM. `films.py` defines two small data classes: `Film` (search result, before it's ever downloaded) and `Stored` (a DB row, after `add_film`).
+Each column carries the same name as its field in `film.py`, so `list_films()` can read rows through `sqlite3.Row` and hand each one straight to `Stored.model_validate(dict(row))` — no positional indexing. The other helpers (`add_film`, `check_already_exists`, `get_status`, `update_status`, `update_progress`, `delete_film_db`, `get_path`, `get_cover`) each open their own short-lived `sqlite3.connect()` — there's no connection pool or ORM.
 
-On startup, `db.py` also runs a lightweight migration: if an existing `database.db` predates the `progress` column, it's added via `ALTER TABLE`. This is intentionally the only migration strategy — there's no versioned migration framework, since the schema is small and changes infrequently.
+`film.py` holds three pydantic models. `Media` has the fields every film shares (`id`, `name`, `type`, `cover`, `seasons_count`, `lang`, and the series trio `serie_title` / `season` / `episode_n`); `Film` adds `slug` and is what search returns and every POST takes; `Stored` adds `path`, `status` and `progress` and is what `/api/films` returns. `coerce_numbers_to_str` is set on `Media` because the catalog sends `id` as an integer while an episode's composite id is a string — both arrive as `str`.
+
+On startup, `db.py` also runs a lightweight migration, each step guarded so it is a no-op on an up-to-date table: columns from older versions are renamed to the model's names (`title` → `name`, `series_title` → `serie_title`, `season_count` → `seasons_count`), and columns older tables never had are added (`progress`, `serie_title`, `season`, `episode_n`, and `lang`, which defaults to `'it'` since everything downloaded before language support was Italian). This is intentionally the only migration strategy — there's no versioned migration framework, since the schema is small and changes infrequently. Note that a migrated table ends up with `lang NOT NULL DEFAULT 'it'` while a freshly created one has a nullable `lang`; see the rough edges.
 
 `DB_PATH` defaults to `data/database.db` but can be overridden with the `DB_PATH` env var. The parent directory is always created up front — this matters specifically under Docker, where a bind mount of a not-yet-existing file can otherwise turn into a directory mount and break things silently.
 
@@ -114,11 +132,11 @@ On startup, `db.py` also runs a lightweight migration: if an existing `database.
 
 `GET /api/browse` powers the folder picker on the export page. It's deliberately sandboxed: a caller can only browse the user's home directory (top level only — to reach shortcuts), `~/Videos`, or any directory mounted under `/media/<user>`, `/run/media/<user>`, `/media`, or `/mnt` (covers common Linux external-drive mount points). `_within()` checks a candidate path is the allowed root or nested under it; `_drive_mounts()` enumerates what's actually mounted right now, so newly plugged-in drives show up without a restart. The response includes the current directory's subfolders, a parent link (omitted at a root, to block climbing above it), a shortcuts list, and the full set of allowed roots so the frontend can grey out unreachable breadcrumb segments.
 
-`POST /api/export` takes a film `id` and a `new_path` destination directory. It looks up the film's stored path, validates the source file exists and the destination is an existing directory, guards against overwriting a same-named file already there, then does a plain `shutil.move()` followed by `delete_film(id)` — export is a one-way move, not a copy, and it always removes the film from the shelf/DB regardless of whether the destination is on the same filesystem (Python's `shutil.move` copies + deletes automatically when moving across filesystems, e.g. a container volume mount to `/media/...`).
+`POST /api/export` takes a film `id` and a `new_path` destination directory. It looks up the film's stored path, validates the source file exists and the destination is an existing directory, guards against overwriting a same-named file already there, then does a plain `shutil.move()` followed by `delete_film_db(id)` — export is a one-way move, not a copy, and it always removes the film from the shelf/DB regardless of whether the destination is on the same filesystem (Python's `shutil.move` copies + deletes automatically when moving across filesystems, e.g. a container volume mount to `/media/...`).
 
 ## Deleting a film
 
-`GET /api/delete?id=...` removes a film for good: it unlinks `Movies/{path}` and `Covers/{cover}` (both `missing_ok=True`, so a file already gone off disk is not an error) and then drops the DB row. It refuses with 400 if no film carries that id, and with 403 if the film's status is anything other than `completed` — deleting a row out from under a running download would leave the yt-dlp worker writing to a file nobody tracks and the progress hook updating a row that no longer exists. Only the DB name is passed through `Path(...).name` before joining, so a stored path can't walk out of `Movies/`.
+`GET /api/delete?id=...` removes a film for good: it unlinks `Films/{path}` and `Covers/{cover}` (both `missing_ok=True`, so a file already gone off disk is not an error) and then drops the DB row. It refuses with 400 if no film carries that id, and with 403 if the film's status is anything other than `completed` — deleting a row out from under a running download would leave the yt-dlp worker writing to a file nobody tracks and the progress hook updating a row that no longer exists. Only the DB name is passed through `Path(...).name` before joining, so a stored path can't walk out of `Films/`. (The directory constant in `main.py` is spelled `FIMLS_DIR`.)
 
 The `delete_film` DB helper was renamed to `delete_film_db` in the same change, purely so the route handler could take the plain name; `download.py` calls the renamed helper on a failed download exactly as before.
 
@@ -140,14 +158,14 @@ The goal is to get a finished film off the host and onto a phone without either 
 
 Four independent static pages for the desktop, no framework, no bundler, plus a separate TV build covered in the next section:
 
-- **index.html** — search box, results grid, calls `/api/search` and `/api/download`.
-- **offline.html** — the shelf. Polls `/api/films` once, then re-polls every second only while at least one film has status `downloading`. To avoid flicker, it distinguishes between "the set of films or their statuses changed" and "only progress changed" (in-place progress bar update via `patchProgress()`, no DOM rebuild). Clicking a completed film's cover opens a modal `<video>` player pointed at `/movies/{path}`. `render()` reconciles the grid against the data by id rather than wiping and rebuilding: cards for films that are gone are removed, new films are appended, and a card is only rebuilt when its `data-status` actually changed — so an unchanged card keeps its DOM node, its focus and its already-played rise animation. A finished film's card foot carries two icon buttons: a link to `qr-phone.html?id=...` and a delete button. Both are only rendered for `completed` films, mirroring the backend's 403 rather than offering a control that would fail.
+- **index.html** — search box, results grid, the IT / EN language pills, and the season/episode sheet for series; calls `/api/switch-language`, `/api/search`, `/api/episodes`, `/api/download` and `/api/download_season`. Search hits and episodes are posted back to the backend whole (`JSON.stringify(film)`), so every `Film` field round-trips without the page having to know the model.
+- **offline.html** — the shelf. Polls `/api/films` once, then re-polls every second only while at least one film has status `downloading`. To avoid flicker, it distinguishes between "the set of films or their statuses changed" and "only progress changed" (in-place progress bar update via `patchProgress()`, no DOM rebuild). Clicking a completed film's cover opens a modal `<video>` player pointed at `/films/{path}`; a series card opens the series sheet described under Series and episodes instead. `render()` reconciles the grid against the data by id rather than wiping and rebuilding: cards for films that are gone are removed, new films are appended, and a card is only rebuilt when its `data-status` actually changed — so an unchanged card keeps its DOM node, its focus and its already-played rise animation. A finished film's card foot carries two icon buttons: a link to `qr-phone.html?id=...` and a delete button. Both are only rendered for `completed` films, mirroring the backend's 403 rather than offering a control that would fail.
 - **qr-phone.html** — the send-to-phone page described above.
 - **export.html** — lists completed films for selection, and a folder browser modal that walks `/api/browse` interactively, rendering clickable breadcrumbs and a shortcuts bar. The last-used destination is remembered in `localStorage`.
 
 The two card glyphs (`qr-icon.svg`, `trash-icon.svg`) are painted through a CSS `mask` on a `::before` rather than dropped in as `<img>`, so they take `currentColor` and can change colour on hover like any other icon. The delete button hovers to `--ember`, the one warning colour in the palette, reserved for the single control on a card that does not give the film back.
 
-`backend/main.py` decides which landing page to serve at `/` based on `utlis.check_connection()` — a 3-second timeout request to `https://www.google.com`. If it fails, `offline.html`'s sibling `offline.html`-labeled fallback (actually served from the same file structure) is returned instead of the search page, since search requires reaching the catalog site.
+`backend/main.py` decides which landing page to serve at `/` based on `utils.check_connection()` — a 3-second timeout request to `https://www.google.com`. If it fails, `offline.html` (the shelf) is returned instead of the search page, since search requires reaching the catalog site.
 
 ## The webOS TV build
 
@@ -186,7 +204,7 @@ Seeking stops half a second short of the end, because landing exactly on `durati
 
 The strip hides itself four seconds after the last press — a bar parked over a two-hour film is an OLED burn-in risk and covers the picture besides — but never while paused, where a film with no bar just looks like a hang. Any key that has nothing else to do in the player wakes it, which is what UP and DOWN are for in there.
 
-**Series on the TV.** The TV build carries the series feature too, and the reason it needed porting at all is worth recording: `FilmIn` gained a *required* `type` field, and the TV's download payload was hand-built with four keys that did not include it. Every download from the set therefore failed with a 422 before the handler ran — the page looked fine and simply stopped working, which is the same shape of failure as the original `??` syntax error, one layer down. There is now a single `filmPayload()` builder that every POST body goes through, so the body and the model cannot drift apart the next time the model gains a field.
+**Series on the TV.** The TV build carries the series feature too, and the reason it needed porting at all is worth recording: the request model (then `FilmIn`, now `Film`) gained a *required* `type` field, and the TV's download payload was hand-built with four keys that did not include it. Every download from the set therefore failed with a 422 before the handler ran — the page looked fine and simply stopped working, which is the same shape of failure as the original `??` syntax error, one layer down. There is now a single `filmPayload()` builder that every POST body goes through, and its keys are exactly the `Film` field names: `name`, `cover`, `slug`, `id`, `type`, `seasons_count`, `lang`, `serie_title`, `season` and `episode_n`. Unlike the desktop page, which posts the object back whole, the TV copies fields one by one (ES5 has no spread), so a field added to `Film` has to be added here by hand too — the series trio was missing until the refactor, which stored every episode queued singly from the TV as `serie_title = NULL`, season 0.
 
 A search hit with `type: "tv"` renders a card that offers "Episodes →" and a season-count badge instead of a download button, and OK opens `#series-layer`: the title, a strip of season pills, a whole-season button, and a horizontal rail of episode cards. It is a layer of its own rather than a mode of the action sheet, because that sheet is a fixed 640px box built for a stacked menu and a rail inside it would show one and a half episodes.
 
@@ -208,7 +226,7 @@ It redirects to `/webos.html` and not to `/`, since the server's root serves the
 
 ## Docker
 
-The image is `python:3.11-slim` plus `ffmpeg` (required by yt-dlp for muxing/remuxing) and Playwright's Chromium plus its OS-level dependencies (`playwright install --with-deps chromium`). `docker-compose.yml` bind-mounts `Movies/`, `Covers/`, `data/`, and both `backend/` and `frontend/` from the host (so code edits are picked up by uvicorn's `--reload` without rebuilding the image), plus `~/Videos` and `/media` (with `rshared` propagation, so drives mounted on the host after the container starts are still visible inside it) to support the export destination browser.
+The image is `python:3.11-slim` plus `ffmpeg` (required by yt-dlp for muxing/remuxing) and Playwright's Chromium plus its OS-level dependencies (`playwright install --with-deps chromium`). `docker-compose.yml` bind-mounts `Films/`, `Covers/`, `data/`, and both `backend/` and `frontend/` from the host (so code edits are picked up by uvicorn's `--reload` without rebuilding the image), plus `~/Videos` and `/media` (with `rshared` propagation, so drives mounted on the host after the container starts are still visible inside it) to support the export destination browser.
 
 ## Known rough edges
 
@@ -219,7 +237,10 @@ The image is `python:3.11-slim` plus `ffmpeg` (required by yt-dlp for muxing/rem
 - Anyone on the LAN who knows a session UUID can pull the film — the token *is* the authorisation, and `/dwnld/{token}` has no other check. That's the same trust level as the rest of the app (no auth anywhere), just worth being explicit about since this endpoint is the one designed to be reached from a second device.
 - The QR code is built from `request.base_url`, i.e. whatever host the shelf page was opened on. Open the shelf at `http://localhost:8000` and the code encodes `localhost`, which is useless to a phone — the shelf has to be opened on the host's LAN address for the handoff to work.
 - `/api/delete` is a `GET`. It's destructive and should be a `DELETE` (or at least a `POST`); as it stands any prefetcher or link-scanner that follows it would delete a film.
-- The webOS build is a second copy of the app, not a shared core — a change to search, the shelf or the handoff has to be made twice, in `offline.html`/`qr-phone.html` and again in `webos.html`. The engine-range constraints make sharing code between them impractical, but the duplication is real and will drift. It already has once: the series work landed on the desktop pages and the backend in one commit and left the TV build two commits behind, where a newly-required `FilmIn` field turned every download from the set into a silent 422. A required field on a shared request model is the sharp edge here — there is nothing that fails at build time, because there is no build.
-- The shelf does not distinguish an episode from a film. An episode is a row like any other, titled with the episode's own name, so a downloaded season arrives as N unrelated-looking entries with no series grouping and no season/episode ordering. This is true of `offline.html` and `webos.html` alike.
+- The webOS build is a second copy of the app, not a shared core — a change to search, the shelf or the handoff has to be made twice, in `offline.html`/`qr-phone.html` and again in `webos.html`. The engine-range constraints make sharing code between them impractical, but the duplication is real and will drift. It already has once: the series work landed on the desktop pages and the backend in one commit and left the TV build two commits behind, where a newly-required `FilmIn` (now `Film`) field turned every download from the set into a silent 422, and the field-rename refactor turned up a second drift: the TV's `filmPayload()` had never sent the series fields at all. A required field on a shared request model is the sharp edge here — there is nothing that fails at build time, because there is no build.
+- The catalog language is one global for the whole process. Every client shares it, the TV cannot change it, and each desktop page load re-sends its own remembered choice — so opening the search page in a second browser silently switches the language for everyone. `download_film()` also builds the watch URL from that global rather than from `film.lang`, so a download that sits in the background queue across a language switch fetches the other edition while its row and filename still say the language it was found in.
+- `lang` is part of the filename but not of the primary key, which is still `id` alone, and the catalog uses the same id for both editions of a title. Queue the English edition of a film already finished in Italian and `add_film()` refuses the insert, `download_film()` returns "already exists", and the client is still told "Queued ✓". Queue both while the first is still downloading and two yt-dlp runs share one row — the second writes `…-en-<id>.mp4` while the row points at `…-it-<id>.mp4`, and a failure in either deletes the row for both.
+- `/api/films` validates every row through `Stored`, so one row that does not fit the model — for instance a `NULL` `lang`, which a freshly created table allows even though a migrated one does not — fails the whole response with a 500 and empties every shelf (desktop, TV, export, phone handoff) at once, rather than dropping the one bad row.
+- `seasons_count` is required on `Film`, and search validates each catalog entry as it parses it, so a single entry with `seasons_count` missing or `null` fails the whole `/api/search` response rather than that one result.
 - `/api/download_season` re-fetches the season synchronously inside an `async def`, so it blocks the event loop for the length of that HTTP request. With one user it is merely slow; it would be the first thing to bite under any concurrency.
 - Nothing dedupes a season queued twice. Both frontends grey the button out once a season is queued, but that state lives in the open sheet — closing and reopening the series offers it again, and the backend queues every episode a second time. The guard in `download_film()` is weaker than it looks: it runs *after* the Playwright step, so a duplicate always pays the full browser launch and playlist sniff, and it only returns early when the existing row's status is `completed`. Re-queueing something still downloading falls straight through into a second yt-dlp run writing the same output path as the first. Queue a season twice before it finishes and every episode is downloaded concurrently by two workers into one file.

@@ -104,8 +104,8 @@
     let pollTimer;
 
     function openPlayer(film) {
-      modalTitle.textContent = film.title ?? "";
-      player.src = `/movies/${encodeURIComponent(film.path)}`;
+      modalTitle.textContent = film.name ?? "";
+      player.src = `/films/${encodeURIComponent(film.path)}`;
       // An episode is played from the series sheet, which is the same kind of
       // overlay and sits later in the document — left up it would paint straight
       // over the video. It steps aside here and comes back in closePlayer, so
@@ -171,7 +171,7 @@
         e.episodes.push(f);
         // Rows saved before the series columns existed carry no title; one row
         // that has one is enough to name the whole group.
-        if (!e.title && f.series_title) e.title = f.series_title;
+        if (!e.title && f.serie_title) e.title = f.serie_title;
       });
       bySeries.forEach((e) => {
         e.title = e.title || `Series ${e.key}`;
@@ -303,13 +303,13 @@
       card.innerHTML = `
         <div class="frame${cover ? "" : " empty"}">
           ${cover
-            ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover" loading="lazy" decoding="async"
+            ? `<img src="${cover}" alt="${escapeHtml(f.name ?? "")} cover" loading="lazy" decoding="async"
                  onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
             : `no artwork`}
           ${playable ? `<div class="play"><span>▶</span></div>` : ""}
         </div>
         <div class="info">
-          <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
+          <div class="name">${escapeHtml(f.name ?? "Untitled")}</div>
           <div class="foot">
             <span class="badge ${status}">${escapeHtml(label)}</span>
             <span class="tools">
@@ -458,7 +458,7 @@
           <span class="epno">${escapeHtml(no)}</span>
         </div>
         <div class="epbody">
-          <div class="epname" title="${escapeHtml(ep.title ?? "")}">${escapeHtml(ep.title ?? "Untitled")}</div>
+          <div class="epname" title="${escapeHtml(ep.name ?? "")}">${escapeHtml(ep.name ?? "Untitled")}</div>
           ${busy
             ? `<span class="badge downloading">Downloading ${pct}%</span>
                <div class="track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill" style="width:${pct}%"></div></div>`
@@ -513,7 +513,7 @@
     // reload rather than just dropping the node: the shelf counts come from the
     // server and would otherwise be a reel out of date.
     async function removeFilm(film, card) {
-      const name = film.title ?? "This film";
+      const name = film.name ?? "This film";
       if (!confirm(`Delete \u201C${name}\u201D from the shelf? The file is removed for good.`)) return;
       const btn = card.querySelector(".delbtn");
       btn.disabled = true;

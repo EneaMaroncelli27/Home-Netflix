@@ -326,26 +326,35 @@
   function isSeries(f) { return !!f && f.type === 'tv'; }
 
   function seasonCount(f) {
-    var n = Math.floor(Number(val(f && f.season_c, 0)) || 0);
+    var n = Math.floor(Number(val(f && f.seasons_count, 0)) || 0);
     return n > 1 ? n : 1;
   }
 
-  /* Every POST body the backend takes is a FilmIn, and FilmIn grew two
-     REQUIRED fields with the series work: `type` and `season_c`. The payload
-     this file used to send carried neither, so FastAPI rejected it with a 422
-     before the handler ever ran -- which is why nothing on the TV downloaded
-     any more. One builder now, so the body and the model cannot drift apart
-     again the next time the model gains a field. `id` is a string server-side
-     as of the same change (an episode's is "<film>-<episode>"), hence the
-     String(). */
+  /* Every POST body the backend takes is a `Film` (backend/scripts/film.py),
+     and FastAPI rejects a body missing one of its REQUIRED fields with a 422
+     before the handler ever runs -- which once meant nothing on the TV
+     downloaded. One builder, so the body and the model cannot drift apart
+     again the next time the model gains a field: keep these keys identical
+     to the Film field names. An episode's id is "<film>-<episode>", hence
+     the String().
+     serie_title / season / episode_n only mean something on an episode
+     minted by /api/episodes, but they must ride along: the backend stores
+     them as sent, and an episode queued without them lands on the shelf as
+     "Series <id>" with every episode in season 0. `lang` comes back on every
+     search hit and episode; it is sent as-is so the row records the catalog
+     the film was actually found in. */
   function filmPayload(f) {
     return {
-      title: val(f.title, ''),
+      name:  val(f.name, ''),
       cover: val(f.cover, null),
       slug:  val(f.slug, null),
       id:    String(val(f.id, '')),
       type:  val(f.type, 'movie'),
-      season_c: Math.floor(Number(val(f.season_c, 0)) || 0)
+      seasons_count: Math.floor(Number(val(f.seasons_count, 0)) || 0),
+      lang:  val(f.lang, null),
+      serie_title: val(f.serie_title, null),
+      season:      Math.floor(Number(val(f.season, 0)) || 0),
+      episode_n:   Math.floor(Number(val(f.episode_n, 0)) || 0)
     };
   }
 
@@ -796,7 +805,7 @@
   }
 
   function findCard(f, i) {
-    var title  = val(f.title, 'Untitled');
+    var title  = val(f.name, 'Untitled');
     var cover  = f.cover ? (IMG_BASE + f.cover) : '';
     var series = isSeries(f);
     var n      = seasonCount(f);
@@ -882,7 +891,7 @@
     seriesOpen   = true;
     stopPolling();
 
-    seriesTitle.innerHTML  = esc(val(f.title, 'Untitled'));
+    seriesTitle.innerHTML  = esc(val(f.name, 'Untitled'));
     seriesStatus.innerHTML = '—';
     epTrack.innerHTML      = '';
     buildSeasonPills(seasonCount(f));
@@ -1029,7 +1038,7 @@
   }
 
   function episodeCard(ep, i) {
-    var title  = val(ep.title, 'Untitled');
+    var title  = val(ep.name, 'Untitled');
     var cover  = ep.cover ? (IMG_BASE + ep.cover) : '';
     var queued = !!seriesQueued['e' + ep.id];
     var epno   = '<span class="epno">E' + pad2(i + 1) + '</span>';
@@ -1261,7 +1270,7 @@
         epno +
       '</div>' +
       '<div class="info">' +
-        '<div class="name">' + esc(val(ep.title, 'Untitled')) + '</div>' +
+        '<div class="name">' + esc(val(ep.name, 'Untitled')) + '</div>' +
         '<div class="foot"><span class="badge ' + esc(status) + '">' + esc(label) + '</span></div>' +
         (status === 'downloading'
           ? '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'
@@ -1363,7 +1372,7 @@
       e.episodes.push(f);
       // Rows saved before the series columns existed carry no title; one row
       // that has one is enough to name the whole group.
-      if (!e.title && f.series_title) { e.title = String(f.series_title); }
+      if (!e.title && f.serie_title) { e.title = String(f.serie_title); }
     }
     for (i = 0; i < entries.length; i++) {
       if (entries[i].kind !== 'series') { continue; }
@@ -1508,7 +1517,7 @@
     var status   = statusOf(f);
     var playable = (status === 'completed' && !!f.path);
     var pct      = Math.max(0, Math.min(100, Math.round(Number(val(f.progress, 0)) || 0)));
-    var title    = val(f.title, 'Untitled');
+    var title    = val(f.name, 'Untitled');
     var cover    = f.cover ? ('/covers/' + encodeURIComponent(f.cover)) : '';
 
     var label;
@@ -1667,7 +1676,7 @@
     lastFocusBeforePlayer = document.activeElement;
     stopPolling();
     playerOpen = true;
-    playerTitle.innerHTML = esc(val(f.title, ''));
+    playerTitle.innerHTML = esc(val(f.name, ''));
 
     // Reset the bar before the new source loads, or the previous film's
     // duration and fill sit there until the first timeupdate arrives.
@@ -1678,7 +1687,7 @@
     playerBuf.style.width = '0%';
     playerKnob.style.left = '0%';
 
-    video.src = '/movies/' + encodeURIComponent(f.path);
+    video.src = '/films/' + encodeURIComponent(f.path);
     playerLayer.className = 'open';
     showPlayerUI();
     try { video.play(); } catch (e) {}
@@ -1908,7 +1917,7 @@
     acts.push({ label: 'Remove from shelf', kind: 'ember', run: function () { confirmRemove(f); } });
     acts.push({ label: 'Cancel', kind: '', run: goBack });
 
-    showSheet(val(f.title, 'Untitled'), 'On shelf', acts, true, false);
+    showSheet(val(f.name, 'Untitled'), 'On shelf', acts, true, false);
   }
 
   /* ------------------------------- REMOVE -------------------------------- */
@@ -1917,7 +1926,7 @@
      reliably reachable with a D-pad on every set. Cancel is focused first
      because this is the one action that does not give the film back. */
   function confirmRemove(f) {
-    showSheet(val(f.title, 'Untitled'),
+    showSheet(val(f.name, 'Untitled'),
       'Delete for good — the file leaves the disk',
       [
         { label: 'Keep it',  kind: '',      run: function () { openFilmSheet(f); } },
@@ -1926,7 +1935,7 @@
   }
 
   function doRemove(f) {
-    showSheet(val(f.title, 'Untitled'), 'Removing…', [], false, false);
+    showSheet(val(f.name, 'Untitled'), 'Removing…', [], false, false);
     request('GET', API + '/api/delete?id=' + encodeURIComponent(f.id), null, 20000,
       function (ok, data, status) {
         if (data) { log(JSON.stringify(data, null, 2)); }
@@ -1936,7 +1945,7 @@
           return;
         }
         var why = (data && data.detail) ? data.detail : ('couldn\'t delete (' + status + ')');
-        showSheet(val(f.title, 'Untitled'), why, [
+        showSheet(val(f.name, 'Untitled'), why, [
           { label: 'Back', kind: 'amber', run: function () { openFilmSheet(f); } },
           { label: 'Close', kind: '', run: goBack }
         ], false, false);
@@ -1967,7 +1976,7 @@
     qrFill.style.width = '0%';
     qrBytes.innerHTML = '—';
 
-    showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera',
+    showSheet(val(f.name, 'Untitled'), 'Scan with the phone camera',
       [{ label: 'Close', kind: '', run: goBack }], false, true);
 
     request('POST', API + '/api/qr-download?id=' + encodeURIComponent(f.id), null, 20000,
@@ -1982,7 +1991,7 @@
         qrState.className = '';
         qrState.innerHTML = 'Waiting for a scan';
         qrBytes.innerHTML = '0 MB of ' + mb(data.size);
-        showSheet(val(f.title, 'Untitled'), 'Scan with the phone camera', [
+        showSheet(val(f.name, 'Untitled'), 'Scan with the phone camera', [
           { label: 'New code', kind: 'amber', run: mintQr },
           { label: 'Close',    kind: '',      run: goBack }
         ], false, true);

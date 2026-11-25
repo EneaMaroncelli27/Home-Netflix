@@ -15,26 +15,43 @@ with get_conn() as conn:
     conn.execute("""
                 CREATE TABLE IF NOT EXISTS films (
                 id TEXT PRIMARY KEY NOT NULL,
-                title VARCHAR(255) NOT NULL,
+                name VARCHAR(255) NOT NULL,
                 type VARCHAR(255) NOT NULL,
                 path VARCHAR(255) NOT NULL,
                 cover VARCHAR(255),
                 status VARCHAR(255) NOT NULL,
-                season_count INTEGER NOT NULL DEFAULT 0,
+                seasons_count INTEGER NOT NULL DEFAULT 0,
                 progress INTEGER NOT NULL DEFAULT 0,
-                series_title VARCHAR(255),
+                serie_title VARCHAR(255),
                 season INTEGER NOT NULL DEFAULT 0,
-                episode_n INTEGER NOT NULL DEFAULT 0
+                episode_n INTEGER NOT NULL DEFAULT 0,
+                lang VARCHAR(8)
                );""")
-    # Migrate older tables that predate a column. Episodes stored before the
-    # series columns existed keep NULL/0 and fall back to their own title.
+
+    # Migrate tables created by older versions so every column carries the
+    # same name as its field in film.py. Each step only runs when needed, so
+    # this is a no-op on a table that is already up to date.
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(films)").fetchall()]
+    if "title" in cols:
+        conn.execute("ALTER TABLE films RENAME COLUMN title TO name")
+    if "series_title" in cols:
+        conn.execute("ALTER TABLE films RENAME COLUMN series_title TO serie_title")
+    if "season_count" in cols:
+        conn.execute("ALTER TABLE films RENAME COLUMN season_count TO seasons_count")
+
+    # Columns that older tables never had.
     cols = [c[1] for c in conn.execute("PRAGMA table_info(films)").fetchall()]
     if "progress" not in cols:
         conn.execute("ALTER TABLE films ADD COLUMN progress INTEGER NOT NULL DEFAULT 0")
-    if "series_title" not in cols:
-        conn.execute("ALTER TABLE films ADD COLUMN series_title VARCHAR(255)")
+    if "serie_title" not in cols:
+        conn.execute("ALTER TABLE films ADD COLUMN serie_title VARCHAR(255)")
+    if "season" not in cols:
         conn.execute("ALTER TABLE films ADD COLUMN season INTEGER NOT NULL DEFAULT 0")
+    if "episode_n" not in cols:
         conn.execute("ALTER TABLE films ADD COLUMN episode_n INTEGER NOT NULL DEFAULT 0")
+    if "lang" not in cols:
+        # Everything downloaded before language support was Italian.
+        conn.execute("ALTER TABLE films ADD COLUMN lang VARCHAR(8) NOT NULL DEFAULT 'it'")
 
 def check_already_exists(id):
     query = "SELECT 1 FROM films WHERE id = ?"
@@ -47,16 +64,16 @@ def add_film(film : Film):
         return "error"
     # safe_name runs on the id too: it is client-supplied like the title, so
     # sanitising only the title would leave the same hole one field to the right.
-    stem = safe_name(film.title) + '-' + safe_name(film.id)
-    path = stem + '.mp4'
-    cover = stem + '.webp'
+    safe_t = safe_name(film.name) + '-' + safe_name(film.lang) + '-'+ safe_name(film.id)
+    path = safe_t + '.mp4'
+    cover = safe_t + '.webp'
     status = "downloading"
-    query = "INSERT INTO FILMS (id, title, type, path, cover, status, season_count, progress, series_title, season, episode_n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    query = "INSERT INTO FILMS (id, name, type, path, cover, status, seasons_count, progress, serie_title, season, episode_n, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     with get_conn() as conn:
-        conn.execute(query, (film.id, film.title, film.type, path, cover, status, film.season_c, 0,
-                             getattr(film, "series_title", None), getattr(film, "season", 0) or 0,
-                             getattr(film, "episode_n", 0) or 0))
+        conn.execute(query, (film.id, film.name, film.type, path, cover, status, film.seasons_count, 0,
+                             film.serie_title, film.season, film.episode_n, film.lang))
     return "ok"
+
 def get_status(id):
     query = "SELECT status FROM films WHERE id = ?"
     with get_conn() as conn:
@@ -79,14 +96,11 @@ def delete_film_db(id):
         conn.execute(query,(id,))
 
 def list_films():
-    # Named columns, not SELECT *: the shelf reads these by position.
-    query = "SELECT id, title, type, path, cover, status, season_count, progress, series_title, season, episode_n FROM films"
+    query = "SELECT id, name, type, path, cover, status, seasons_count, progress, serie_title, season, episode_n, lang FROM films"
     with get_conn() as conn:
-        db_entries = conn.execute(query).fetchall()
-    films = []
-    for f in db_entries:
-        films.append(Stored(f[0],f[1],f[2],f[3],f[4],f[5],f[6],f[7],f[8],f[9],f[10]))
-    return films
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query).fetchall()
+    return [Stored.model_validate(dict(row)) for row in rows]
 
 def get_path(id : int):
     query = "SELECT path FROM films WHERE id = ?"

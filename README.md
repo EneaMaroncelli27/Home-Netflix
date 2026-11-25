@@ -34,9 +34,11 @@ For an explanation of how it works internally (backend structure, download pipel
 
 **Find a film** — the home page (`/`). Type a title and press Find. Results come from the live catalog; press "Download" on a result to start pulling it to disk in the background.
 
-**Series** — a search result that is a series shows a season count and an "Episodes" button instead of "Download". Open it and you get the season list: pick a season, then pull a single episode with the button on its card, or take the whole season at once with "Download season". Episodes land on the shelf as ordinary entries, named for the episode, and play and export exactly like a film. There is no series grouping on the shelf yet — a downloaded season shows up as one entry per episode.
+**Catalog language** — the IT / EN pills at the top of the search page pick which edition of the catalog search, episodes and downloads use. The choice is remembered in the browser and re-sent to the server each time the page loads, because the server starts in Italian on every restart. It is one setting for the whole server, not per device: the TV has no language control of its own and uses whatever was picked last on a desktop page.
 
-**My shelf** — `/offline.html`. Shows every film that's downloading or finished. In-progress downloads show a live progress bar. Click a finished film's cover to play it in the built-in video player.
+**Series** — a search result that is a series shows a season count and an "Episodes" button instead of "Download". Open it and you get the season list: pick a season, then pull a single episode with the button on its card, or take the whole season at once with "Download season". On the shelf a series' episodes collapse into one card named for the series; open it to get the same season pills and the episodes in order. Each episode plays and exports exactly like a film.
+
+**My shelf** — `/offline.html`. Shows every film and series that's downloading or finished. In-progress downloads show a live progress bar. Click a finished film's cover to play it in the built-in video player.
 
 **Export** — `/offline.html` → Export. Pick a finished film, then choose a destination folder using the built-in folder browser (limited to your home directory, `~/Videos`, and any mounted external drive), and press Export. This moves the file out of the app and removes it from the shelf.
 
@@ -69,11 +71,11 @@ Dev Manager can also package a folder into an `.ipk` for you, so no local SDK in
 
 ## Data and storage
 
-- `Movies/` — downloaded video files
-- `Covers/` — downloaded cover art
-- `data/database.db` — SQLite database tracking each film's title, status, and download progress
+- `Films/` — downloaded video files, named `<name>-<lang>-<id>.mp4` (files downloaded before language support are `<name>-<id>.mp4`)
+- `Covers/` — downloaded cover art, named the same way with `.webp`
+- `data/database.db` — SQLite database tracking each film's name, catalog language, series/season/episode, status and download progress
 
-These directories are mounted as Docker volumes, so downloads and the database persist across container restarts.
+These directories are mounted as Docker volumes, so downloads and the database persist across container restarts. Older databases are migrated in place on startup (renamed columns, new `lang` column defaulting to `it`), so an existing shelf survives an upgrade.
 
 ## Configuration reference
 
@@ -85,6 +87,8 @@ All configuration lives in `.env` (see `.env.example`):
 | `TG_API_HASH` | Telegram API hash from my.telegram.org |
 | `TG_SESSION` | Session string produced by `backend/scripts/tg_session.py` |
 | `TG_CHANNEL` | Telegram channel that announces the current catalog domain |
+| `URL` | Fallback catalog domain (e.g. `https://…`), used when the Telegram lookup is not configured or fails |
+| `DEBUG` | `true` shows the raw-response log ("projection booth") in the frontends; default `false` |
 
 `docker-compose.yml` also mounts `~/Videos` and `/media` into the container, so folders there are selectable as export destinations from inside Docker.
 

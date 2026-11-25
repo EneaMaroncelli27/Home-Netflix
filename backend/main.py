@@ -1,9 +1,7 @@
 import os
-import sys
 from pathlib import Path
 from backend.scripts.utils import check_connection
-
-
+from backend.scripts.film import Film
 ROOT = Path(__file__).resolve().parent.parent
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +9,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
-from pydantic import BaseModel
 from backend.scripts.search import search_by_title, get_episodes
 from backend.scripts.download import download_film
 from backend.scripts.urlgetter import URL, COVER_URL
@@ -40,24 +37,11 @@ FRONTEND_DIR = ROOT / "frontend"
 ONLINE_FRONTEND = FRONTEND_DIR / "index.html"
 OFFLINE_FRONTEND = FRONTEND_DIR / "offline.html"
 COVERS_DIR = ROOT / "Covers"
-MOVIES_DIR = ROOT / "Movies"
+FILMS_DIR = ROOT / "Films"
 COVERS_DIR.mkdir(exist_ok=True)
-MOVIES_DIR.mkdir(exist_ok=True)
+FILMS_DIR.mkdir(exist_ok=True)
 
 phone_sessions = {}
-
-class FilmIn(BaseModel):
-    title: str
-    cover: str | None = None
-    slug: str | None = None
-    id: str
-    type : str
-    season_c : int = 0
-    # Episodes carry these back from /api/episodes so the shelf can group them.
-    series_title : str | None = None
-    season : int = 0
-    episode_n : int = 0
-
 
 @app.get("/")
 def home():
@@ -71,19 +55,19 @@ def search(title: str):
     return films
 
 @app.post('/api/episodes')
-def episodes(film : FilmIn, season : int):
+def episodes(film : Film, season : int):
     if not season:
         raise HTTPException(status_code=400,detail="Season number required")
     episodes = get_episodes(film,season)
     return episodes
 
 @app.post("/api/download")
-async def download(film: FilmIn, background_tasks : BackgroundTasks):
+async def download(film: Film, background_tasks : BackgroundTasks):
     background_tasks.add_task(download_film,film) # download_film only reads .id and .title
     return {"status": "ok"}
 
 @app.post('/api/download_season')
-async def download_s(film: FilmIn, season : int, background_tasks : BackgroundTasks):
+async def download_s(film: Film, season : int, background_tasks : BackgroundTasks):
     episodes = get_episodes(film,season)
     for ep in episodes:
         background_tasks.add_task(download_film,ep) # download_film only reads .id and .title
@@ -107,7 +91,7 @@ def del_film(id):
     film_name = get_path(id)
     cover_name = get_cover(id)
     if film_name:
-        (MOVIES_DIR / Path(film_name).name).unlink(missing_ok=True)
+        (FILMS_DIR / Path(film_name).name).unlink(missing_ok=True)
     if cover_name:
         (COVERS_DIR / Path(cover_name).name).unlink(missing_ok=True)
     delete_film_db(id)
@@ -202,9 +186,9 @@ def export(id, new_path : str):
     path = get_path(id)
     if path == None:
         raise HTTPException(status_code=400, detail="No film was found with that id")
-    # .name, like del_film: pathlib's '/' discards MOVIES_DIR when the right
+    # .name, like del_film: pathlib's '/' discards FILMS_DIR when the right
     # operand is absolute, so a poisoned row would otherwise reach outside.
-    src = MOVIES_DIR / Path(path).name
+    src = FILMS_DIR / Path(path).name
     dest = Path(new_path)
     if not src.is_file():
         raise HTTPException(status_code=404, detail="The source isn't a file or doesn't exist")
@@ -228,9 +212,9 @@ def qr_download(id, request: Request):
     path = get_path(id)
     if path == None:
             raise HTTPException(status_code=400, detail="No film was found with that id")
-    # .name, like del_film: pathlib's '/' discards MOVIES_DIR when the right
+    # .name, like del_film: pathlib's '/' discards FILMS_DIR when the right
     # operand is absolute, so a poisoned row would otherwise reach outside.
-    src = MOVIES_DIR / Path(path).name
+    src = FILMS_DIR / Path(path).name
     if not src.is_file():
         raise HTTPException(status_code=404, detail="That film is missing on disk")
 
@@ -300,7 +284,7 @@ async def phone_download(sess: str, request: Request):
     if session["state"] == "active":
         raise HTTPException(status_code=409, detail="This code is already downloading somewhere")
 
-    src = MOVIES_DIR / Path(session["path"]).name
+    src = FILMS_DIR / Path(session["path"]).name
     if not src.is_file():
         session["state"] = "aborted"
         raise HTTPException(status_code=404, detail="The film went missing from disk")
@@ -355,5 +339,5 @@ def switch_lan(language : str):
         raise HTTPException(status_code=400,detail="language not available")
 
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
-app.mount("/movies", StaticFiles(directory=MOVIES_DIR), name="movies")
+app.mount("/films", StaticFiles(directory=FILMS_DIR), name="films")
 app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="frontend")

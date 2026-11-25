@@ -133,7 +133,7 @@
       } else {
         selected = film;
         card.classList.add("selected");
-        selName.textContent = film.title ?? "Untitled";
+        selName.textContent = film.name ?? "Untitled";
         selName.classList.remove("none");
       }
       refreshShipBtn();
@@ -149,7 +149,7 @@
       const original = shipBtn.textContent;
       shipBtn.disabled = true;
       shipBtn.textContent = "Exporting…";
-      setLine(`Sending “${selected.title}” to ${newPath}…`);
+      setLine(`Sending “${selected.name}” to ${newPath}…`);
 
       try {
         const res = await fetch(url, { method: "POST" });
@@ -159,7 +159,7 @@
 
         if (res.ok && body && body.status === "ok") {
           shipBtn.textContent = "Exported ✓";
-          setLine(`“${selected.title}” landed in ${newPath} and left the shelf.`, "ok");
+          setLine(`“${selected.name}” landed in ${newPath} and left the shelf.`, "ok");
           // export deletes the film server-side — drop the selection and refresh the grid
           selected = null;
           selName.textContent = "none picked yet";
@@ -347,12 +347,12 @@
           <div class="frame${cover ? "" : " empty"}">
             ${ready ? `<span class="pick" aria-hidden="true"></span>` : ""}
             ${cover
-              ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover"
+              ? `<img src="${cover}" alt="${escapeHtml(f.name ?? "")} cover"
                    onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.append('no artwork')" />`
               : `no artwork`}
           </div>
           <div class="info">
-            <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
+            <div class="name">${escapeHtml(f.name ?? "Untitled")}</div>
             <div class="foot">
               <span class="badge ${status}">${escapeHtml(label)}</span>
             </div>

@@ -95,7 +95,7 @@
       try {
         const films = await (await fetch(`${API}/api/films`)).json();
         const film = films.find((f) => String(f.id) === String(filmId));
-        reel.textContent = film ? film.title : "This film";
+        reel.textContent = film ? film.name : "This film";
       } catch (e) {
         reel.textContent = "This film";
       }

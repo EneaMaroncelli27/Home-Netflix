@@ -17,7 +17,7 @@ log.setLevel(logging.INFO)
 log.propagate = False
 
 
-async def download_film(movie : Film):
+async def download_film(film : Film):
     async with async_playwright() as p:
         download_url = None
         found = asyncio.Event()
@@ -39,24 +39,24 @@ async def download_film(movie : Film):
 
         await page.route("**/*", block_assets)
         page.on("request", handle_req)
-        if movie.type == "episode":
-            episode_id = movie.id.split('-')[1]
-            film_id = movie.id.split('-')[0]
-            await page.goto(URL + f'/{get_language()}/watch/{film_id}?e={episode_id}', timeout=60000)
+        if film.type == "episode":
+            episode_id = film.id.split('-')[1]
+            film_id = film.id.split('-')[0]
+            await page.goto(URL + f'/{film.lang}/watch/{film_id}?e={episode_id}', timeout=60000)
         else: 
-            await page.goto(URL + f'/{get_language()}/watch/{movie.id}', timeout=60000)
+            await page.goto(URL + f'/{film.lang}/watch/{film.id}', timeout=60000)
         try:
             await asyncio.wait_for(found.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             pass
         await browser.close()
         if not download_url:
-            log.warning("no playlist url found for %s (id=%s)", movie.title, movie.id)
+            log.warning("no playlist url found for %s (id=%s)", film.name, film.id)
             return
-    log.info("found playlist url for %s (id=%s)", movie.title, movie.id)
+    log.info("found playlist url for %s (id=%s)", film.name, film.id)
 
-    if add_film(movie) == "error":
-        if get_status(movie.id) == "completed":
+    if add_film(film) == "error":
+        if get_status(film.id) == "completed":
             return "already exists"
 
     class FwdLogger:
@@ -86,7 +86,7 @@ async def download_film(movie : Film):
             ipct = int(pct)
             if ipct != last_written:
                 last_written = ipct
-                update_progress(movie.id, min(ipct, 99))
+                update_progress(film.id, min(ipct, 99))
 
     options = {
         # Prefer a single muxed stream so the NATIVE HLS downloader runs (reports
@@ -96,8 +96,8 @@ async def download_film(movie : Film):
         # Must match db.add_film's `stem` exactly, or the row and the file on
         # disk name different things. yt-dlp does NOT sanitise the literal part
         # of a template, and its `paths` option does not contain a traversing
-        # one either, so this is the only thing keeping the write inside Movies/.
-        'outtmpl' : f'Movies/{safe_name(movie.title)}-{safe_name(movie.id)}.mp4',
+        # one either, so this is the only thing keeping the write inside Films/.
+        'outtmpl' : f'Films/{safe_name(film.name)}-{safe_name(film.lang)}-{safe_name(film.id)}.mp4',
         'progress_hooks' : [custom_progress_hook],
         'concurrent_fragment_downloads': 16,
         'hls_prefer_native': True,
@@ -109,21 +109,21 @@ async def download_film(movie : Film):
     }
 
     def _blocking_download():
-        resp = requests.get(COVER_URL + movie.cover)
+        resp = requests.get(COVER_URL + film.cover)
         if resp.status_code == 200:
-            with open(f'Covers/{safe_name(movie.title)}-{safe_name(movie.id)}.webp', 'wb') as f:
+            with open(f'Covers/{safe_name(film.name)}-{safe_name(film.lang)}-{safe_name(film.id)}.webp', 'wb') as f:
                 f.write(resp.content)
-        log.info("starting yt-dlp for %s url=%s", movie.title, download_url)
+        log.info("starting yt-dlp for %s url=%s", film.name, download_url)
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([download_url])
-        log.info("yt-dlp finished file for %s", movie.title)
+        log.info("yt-dlp finished file for %s", film.name)
 
     try:
         await asyncio.to_thread(_blocking_download)
     except Exception as e:
-        log.exception("download failed for %s (id=%s): %s", movie.title, movie.id, e)
-        delete_film_db(movie.id)
+        log.exception("download failed for %s (id=%s): %s", film.name, film.id, e)
+        delete_film_db(film.id)
         raise
-    update_progress(movie.id, 100)
-    update_status(movie.id, "completed")
-    log.info("completed %s (id=%s)", movie.title, movie.id)
+    update_progress(film.id, 100)
+    update_status(film.id, "completed")
+    log.info("completed %s (id=%s)", film.name, film.id)

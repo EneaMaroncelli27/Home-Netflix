@@ -151,7 +151,7 @@
 
     // A series has type "tv" and a season count; a film has type "movie".
     const isSeries = (f) => f && f.type === "tv";
-    const seasonCount = (f) => Math.max(1, Number(f && f.season_c) || 1);
+    const seasonCount = (f) => Math.max(1, Number(f && f.seasons_count) || 1);
 
     async function search() {
       const title = q.value.trim();
@@ -186,13 +186,13 @@
         card.innerHTML = `
           <div class="frame">
             ${cover
-              ? `<img src="${cover}" alt="${escapeHtml(f.title ?? "")} cover" loading="lazy" decoding="async"
+              ? `<img src="${cover}" alt="${escapeHtml(f.name ?? "")} cover" loading="lazy" decoding="async"
                    onerror="this.parentElement.classList.add('empty');this.remove();this.parentElement.textContent='no artwork'" />`
               : `<span>no artwork</span>`}
             ${series ? `<div class="play"><span>≡</span></div>` : ``}
           </div>
           <div class="info">
-            <div class="name">${escapeHtml(f.title ?? "Untitled")}</div>
+            <div class="name">${escapeHtml(f.name ?? "Untitled")}</div>
             <div class="foot">
               ${series
                 ? `<button class="btn btn--amber pull">Episodes →</button>
@@ -260,7 +260,7 @@
       sm.queued.clear();
       sm.seasonsQueued.clear();
       sm.returnFocus = document.activeElement;
-      sm.title.textContent = film.title ?? "Untitled";
+      sm.title.textContent = film.name ?? "Untitled";
       buildSeasonPills(seasonCount(film));
       sm.el.classList.add("open");
       document.body.style.overflow = "hidden";
@@ -363,7 +363,7 @@
             <span class="epno">E${String(i + 1).padStart(2, "0")}</span>
           </div>
           <div class="epbody">
-            <div class="epname" title="${escapeHtml(ep.title ?? "")}">${escapeHtml(ep.title ?? "Untitled")}</div>
+            <div class="epname" title="${escapeHtml(ep.name ?? "")}">${escapeHtml(ep.name ?? "Untitled")}</div>
             <button class="btn btn--amber epget">Download ↓</button>
           </div>`;
         const btn = li.querySelector(".epget");

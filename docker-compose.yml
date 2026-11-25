@@ -12,7 +12,7 @@ services:
       - URL=${URL:-}
 
     volumes:
-      - ./Movies:/app/Movies
+      - ./Films:/app/Films
       - ./Covers:/app/Covers
       - ./data:/app/data
       - ./backend:/app/backend
